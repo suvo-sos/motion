@@ -1,9 +1,9 @@
 import HomePage from "@/components/home/HomePage";
 import { APP_TITLE } from "@/lib/app-config";
 
-const SEO_TITLE = `${APP_TITLE} - Open Source AI app starter with actions`;
+const SEO_TITLE = `${APP_TITLE} — agent-native SVG motion studio`;
 const SEO_DESCRIPTION =
-  "Open Source starter for agent-native apps with durable chat, shared actions, UI state, tools, and a backend your agent can extend.";
+  "Describe an animation and the agent draws the SVG and writes the keyframes. Shape it on the timeline, then export a standalone animated SVG.";
 
 export function meta() {
   return [

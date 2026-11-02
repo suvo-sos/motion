@@ -3,7 +3,7 @@ import { useT } from "@agent-native/core/client/i18n";
 import { focusAgentChat } from "@agent-native/toolkit/app/chat";
 import { AgentSidebar } from "@agent-native/toolkit/app/chat";
 import { type ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams, useLocation } from "react-router";
 
 import { chatThreadPath } from "@/lib/chat-paths";
 import { TAB_ID } from "@/lib/tab-id";
@@ -22,6 +22,14 @@ export function AgentInspector({
 }: AgentInspectorProps) {
   const navigate = useNavigate();
   const t = useT();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const projectId =
+    location.pathname.startsWith("/motion") ? searchParams.get("id") : null;
+  const storageKey = projectId ? `motion:${projectId}` : "chat";
+  const scope = projectId
+    ? { type: "animation", id: projectId, label: "This animation" }
+    : null;
 
   function openAskAgentFullscreen(threadId?: string) {
     focusAgentChat();
@@ -33,7 +41,9 @@ export function AgentInspector({
       position="right"
       chatViewTransition
       chatViewTransitionHandoff={chatHomeHandoffPending}
-      storageKey="chat"
+      storageKey={storageKey}
+      scope={scope}
+      isolateHistoryByScope
       browserTabId={TAB_ID}
       openOnChatRunning={chatHomeHandoffActive}
       onFullscreenRequest={openAskAgentFullscreen}

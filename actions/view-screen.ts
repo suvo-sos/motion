@@ -10,9 +10,19 @@ export default defineAction({
   readOnly: true,
   run: async () => {
     const navigation = await readAppState("navigation");
+    const url = await readAppState("__url__");
 
     const screen: Record<string, unknown> = {};
     if (navigation) screen.navigation = navigation;
+    if (url) screen.url = url;
+
+    // Surface the open animation id when the studio is open, so the agent
+    // always targets the right row and re-reads it before editing.
+    const searchParams = (url as any)?.searchParams ?? {};
+    const id =
+      (typeof searchParams?.id === "string" && searchParams.id) ||
+      (typeof searchParams?.get === "function" ? searchParams.get("id") : null);
+    if (id) screen.animationId = id;
 
     if (Object.keys(screen).length === 0) {
       return "No application state found. Is the app running?";

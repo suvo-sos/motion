@@ -1,6 +1,6 @@
-# Chat — Agent Guide
+# Motion Studio — Agent Guide
 
-Chat is the minimal chat-first agent-native app. `/` redirects to shared sign-in, then `/home`, the editable Get started page. Chat lives at `/chat`; new chats start there. Actions carry capabilities; screens exist only for durable workflows.
+Motion Studio is a project-based, agent-native SVG motion app. A project is one animated SVG: raw SVG markup plus keyframe tracks. The agent draws the SVG and writes the tracks; the user shapes them on a timeline. `/home` is the project launcher, `/motion?id=<id>` is the studio, and `/chat` remains the full-screen chat surface.
 
 ## Skills
 
@@ -19,15 +19,35 @@ For custom branding, keep `server/plugins/agent-native-email-branding.ts` aligne
 
 ## Application state
 
-- `navigation` describes the view and selected ids. Chat is `chat` at `/chat` and `/chat/<threadId>`; the Get started page is `home` at `/home`; `/` opens shared sign-in/signup.
+- A project is an `animations` row; the selected project id is the `motion` view's `id`.
+- `home` is the project launcher at `/home`: prompt composer, template buttons, and the project grid.
+- `motion` is the studio at `/motion?id=<id>`: full-bleed editor with the AgentSidebar on the right.
+- `chat` is the full-screen chat at `/chat` and `/chat/<threadId>`. The home composer hands a prompt off to a chat thread, where the agent creates the project and typically navigates into the studio.
+- `/` opens shared sign-in/signup and lands on `/home`.
 - Use `navigate` when supported and `view-screen` for a fresh read of visible details; basic navigation is already in `<current-screen>`.
 
-## Building a domain app
+## App shell
 
-Choose the primary workflow and route before editing. Add a domain route under `app/routes/` and set `app.homePath` in `server/plugins/agent-native-email-branding.ts` with `defineAppConfig`. The default Get started page lives at `/home`, and Chat stays at `/chat`; edit `app/routes/home.tsx` when replacing that page with a domain-specific home. Add a static link in `app/components/layout/Sidebar.tsx` before `ChatThreadsSection`; `Header.tsx` uses `APP_TITLE` elsewhere. Shared sidebar and AgentInspector remain.
+- `app/components/layout/Sidebar.tsx` lists **projects** from `list-animations`, not chat threads. It has no documentation or community links. Keep the project list scrollable and the “New project” action pointed at `/home`.
+- `app/components/home/HomePage.tsx` is the project launcher: the AgentKit composer, template prompt buttons, and project cards (with an SVG preview). It must not render docs/community columns.
+- `app/routes/motion.tsx` is the studio. `app/components/layout/Layout.tsx` omits the app sidebar and header on `/motion`, so the studio owns the full screen; the shared `AgentInspector` stays and the studio header hosts `AgentToggleButton`.
+- `app/lib/app-config.ts` holds `APP_TITLE`; the sidebar brand, page titles, and metadata use it.
 
-Use `adding-a-feature` for functional parity and `frontend-design` for a user-facing screen. Keep feature guidance here; do not rewrite `README.md` or `DESIGN.md`. After all edits, run one typecheck, one doctor check, and one browser smoke of the primary workflow, including overlap rejection, cancellation freeing the slot, and authenticated landing. Skip production build and extra test suites.
+## Motion Studio data
 
-Before building common workspace or agent UI, read `agent-native-toolkit`; for supported customization, read `customizing-agent-native`.
+`animations` rows hold raw `svg`, a JSON `tracks` array, `duration` (ms), and `loop`. A track is `{ target, property, keyframes }`; `property` is one of `translateX`, `translateY`, `scale`, `rotate`, `opacity`, `fill`, `strokeDashoffset`; each keyframe is `{ t (0-1), v, ease? }`.
 
-- Guarded verification: run `pnpm agent-native:doctor`; fix findings before done.
+Invariants: every `target` matches an element id in `svg`; ids are unique; keyframes are inside 0..1; loops match the first and last pose. The UI and the agent edit the same row, so the studio polls `list-animations` and `get-animation` and adopts external writes.
+
+| Action | Use |
+| --- | --- |
+| list-animations | List projects; pass `includeSvg: true` to include `svg` + `tracks` for thumbnails |
+| get-animation | Read svg + tracks for one id |
+| save-animation | Create (no id) or update (id) |
+| delete-animation | Remove one id |
+
+The agent-facing workflow lives in `server/plugins/agent-chat.ts`: stable ids, one track per property per element, normalized keyframe time, meaningful easing, draw-on via `pathLength="1"` + `stroke-dasharray="1"` + `strokeDashoffset`, and `navigate` to `/motion?id=<id>` after saving.
+
+## Verification
+
+Run `pnpm typecheck` and `pnpm agent-native:doctor` after edits. Do **not** run browser automation, screenshots, or curl/uptime probes; ask the user to load the affected screen and report what they see.

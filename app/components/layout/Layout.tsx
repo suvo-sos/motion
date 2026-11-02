@@ -92,6 +92,8 @@ function LayoutShell({ children }: LayoutProps) {
   // Settings brings its own navigation, header, and agent toggle, so it
   // renders full width.
   const settingsOwnsChrome = isSettingsPathname(location.pathname);
+  // The motion editor is a full-bleed studio: no app sidebar or header.
+  const isStudioRoute = location.pathname.startsWith("/motion");
   const chatHomeHandoffActive = useAgentChatHomeHandoff({
     storageKey: "chat",
     activePath: location.pathname,
@@ -146,7 +148,7 @@ function LayoutShell({ children }: LayoutProps) {
   const ownsToolbar = routeOwnsToolbar(location.pathname);
   const contentFrame = (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-      {isChatRoute ? (
+      {isStudioRoute ? null : isChatRoute ? (
         <MobileAppBar
           className="md:hidden"
           onOpenNavigation={openMobileSidebar}
@@ -163,7 +165,11 @@ function LayoutShell({ children }: LayoutProps) {
           <Header onOpenMobileSidebar={openMobileSidebar} />
         </Suspense>
       )}
-      <main className="agent-native-app-main min-w-0 flex-1 overflow-y-auto overscroll-contain">
+      <main
+        className={`agent-native-app-main min-w-0 flex-1 overscroll-contain ${
+          isStudioRoute ? "overflow-hidden" : "overflow-y-auto"
+        }`}
+      >
         {children}
       </main>
     </div>
@@ -172,7 +178,7 @@ function LayoutShell({ children }: LayoutProps) {
   return (
     <HeaderActionsProvider>
       <div className="agent-layout-shell chat-layout-shell flex h-screen w-full overflow-hidden bg-background text-foreground">
-        {settingsOwnsChrome ? null : (
+        {settingsOwnsChrome || isStudioRoute ? null : (
           <div
             data-collapsed={sidebarCollapsed ? "true" : "false"}
             className="agent-layout-left-drawer hidden md:block"

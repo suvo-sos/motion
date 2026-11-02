@@ -40,6 +40,10 @@
   --chat-sidebar-title-fade: 1.25rem;
 }
 
+.chat-first-surface-panel {
+  max-height: calc(100vh - 264px) !important;
+}
+
 .chat-layout-shell {
   --agent-layout-left-drawer-expanded-width: var(--chat-sidebar-width);
   --agent-layout-left-drawer-collapsed-width: 3rem;
@@ -281,3 +285,60 @@
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.34);
 }
+
+/* Colored checkerboard used behind translucent color previews. */
+.motion-checkerboard {
+  background-color: hsl(var(--background));
+  background-image:
+    linear-gradient(
+      45deg,
+      hsl(var(--muted-foreground) / 0.18) 25%,
+      transparent 25%,
+      transparent 75%,
+      hsl(var(--muted-foreground) / 0.18) 75%
+    ),
+    linear-gradient(
+      45deg,
+      hsl(var(--muted-foreground) / 0.18) 25%,
+      transparent 25%,
+      transparent 75%,
+      hsl(var(--muted-foreground) / 0.18) 75%
+    );
+  background-size: 8px 8px;
+  background-position:
+    0 0,
+    4px 4px;
+}
+
+/* react-colorful, restyled to match the shadcn control language. */
+.motion-color-picker .react-colorful {
+  width: 100%;
+  height: 188px;
+  gap: 10px;
+}
+
+.motion-color-picker .react-colorful__saturation {
+  border-bottom: 0;
+  border-radius: 7px;
+}
+
+.motion-color-picker .react-colorful__hue,
+.motion-color-picker .react-colorful__alpha {
+  height: 12px;
+  border-radius: 9999px;
+}
+
+.motion-color-picker .react-colorful__last-control {
+  border-radius: 9999px;
+}
+
+.motion-color-picker .react-colorful__pointer {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+  border-color: #fff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.35),
+    0 1px 2px rgb(0 0 0 / 0.25);
+}
+

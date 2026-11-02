@@ -1,5 +1,5 @@
-const rawAppName = "agent-native-hackathon";
-const rawAppTitle = "Agent Native Hackathon";
+const rawAppName = "motion-studio";
+const rawAppTitle = "Motion Studio";
 
 const APP_NAME_PLACEHOLDER = "{" + "{APP_NAME}}";
 const APP_TITLE_PLACEHOLDER = "{" + "{APP_TITLE}}";
