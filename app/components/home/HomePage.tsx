@@ -13,19 +13,23 @@ import { WaveBackground } from "@agent-native/toolkit/app/shared";
 import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
 import {
   IconArrowUpRight,
+  IconBallTennis,
   IconBolt,
   IconChartBar,
   IconCircleDot,
+  IconHeart,
   IconLoader2,
+  IconPlanet,
   IconSparkles,
   IconUpload,
 } from "@tabler/icons-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getChatHomeThreadId } from "@/lib/chat-home-thread";
+import { cn } from "@/lib/utils";
 import {
   chatHandoffComposerOptions,
   chatThreadPath,
@@ -34,46 +38,33 @@ import {
 } from "@/lib/chat-paths";
 import { TAB_ID } from "@/lib/tab-id";
 import { toAnimatedSvg, type MotionAnimation } from "../../../lib/motion";
+import {
+  CSS_TEMPLATES,
+  MOTION_TEMPLATES,
+  STARTER_TEMPLATES,
+  type MotionTemplate,
+  type TemplateIconName,
+} from "../../../lib/templates";
 
 const COMPOSER_PLACEHOLDER =
   "Describe an animation — a logo reveal, a bouncing loader, a sticker pop…";
 
-const TEMPLATES: Array<{
-  label: string;
-  prompt: string;
-  icon: typeof IconSparkles;
-}> = [
-  {
-    label: "Logo reveal",
-    icon: IconSparkles,
-    prompt:
-      "Make a logo reveal animation: a mark draws on with a stroke, then scales in with a soft overshoot. Use a primary move plus a smaller supporting move, and loop seamlessly.",
-  },
-  {
-    label: "Loading dots",
-    icon: IconLoader2,
-    prompt:
-      "Create a three-dot loading animation with staggered bounces, snappy eased timing, and a seamless loop.",
-  },
-  {
-    label: "Sticker pop",
-    icon: IconBolt,
-    prompt:
-      "Make a playful sticker pop: a star scales in from 0.9 with an overshoot, rotates slightly, and settles. Loop it seamlessly.",
-  },
-  {
-    label: "Spinner",
-    icon: IconCircleDot,
-    prompt:
-      "Create a smooth circular spinner: a stroked arc draws on and rotates continuously. Loop it seamlessly.",
-  },
-  {
-    label: "Equalizer",
-    icon: IconChartBar,
-    prompt:
-      "Create a looping equalizer: five bars rise and fall with staggered translateY motion and eased timing.",
-  },
-];
+/**
+ * Template previews run on a slowed clock so browsing them reads as motion
+ * design rather than flicker.
+ */
+const PREVIEW_SPEED = 2.2;
+
+const TEMPLATE_ICONS: Record<TemplateIconName, typeof IconSparkles> = {
+  sparkles: IconSparkles,
+  loader: IconLoader2,
+  bolt: IconBolt,
+  spinner: IconCircleDot,
+  bars: IconChartBar,
+  heart: IconHeart,
+  orbit: IconPlanet,
+  ball: IconBallTennis,
+};
 
 interface ProjectSummary extends MotionAnimation {
   updatedAt?: string;
@@ -83,12 +74,50 @@ export default function HomePage() {
   const navigate = useNavigate();
   const [threadId] = useState(getChatHomeThreadId);
   const [uploading, setUploading] = useState(false);
+  const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
+  const [view, setView] = useState<"projects" | "templates">("projects");
   const save = useActionMutation("save-animation");
   const projectsQuery = useActionQuery(
     "list-animations",
     { includeSvg: true },
     { refetchInterval: 4000 } as any,
   );
+
+  /**
+   * Templates are complete animations, so this writes the project directly
+   * instead of routing through the agent — one click, landed in the studio.
+   */
+  async function createFromTemplate(template: MotionTemplate) {
+    if (creatingTemplate) return;
+    setCreatingTemplate(template.id);
+    try {
+      // Imported CSS templates keep their own <style> block and are fetched on
+      // demand so their embedded art stays out of the JS bundle.
+      const svg = template.src
+        ? await fetch(template.src).then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status} loading ${template.src}`);
+            return res.text();
+          })
+        : template.svg;
+      if (!svg) throw new Error("Template has no SVG payload");
+      const result: any = await save.mutateAsync({
+        title: template.label,
+        svg,
+        tracks: template.tracks ?? [],
+        duration: template.duration,
+        loop: template.loop,
+      });
+      if (result?.id) {
+        navigate(`/motion?id=${encodeURIComponent(result.id)}`);
+      } else {
+        alert(`Could not create "${template.label}": ${result?.error ?? "unknown error"}`);
+      }
+    } catch (err) {
+      alert(`Could not create "${template.label}": ${(err as Error)?.message ?? err}`);
+    } finally {
+      setCreatingTemplate(null);
+    }
+  }
 
   async function handleUpload(file: File) {
     if (!file) return;
@@ -153,69 +182,93 @@ export default function HomePage() {
         <HomeAgentComposer threadId={threadId} onStart={start} />
       </section>
 
-      <section className="mx-auto w-full max-w-5xl space-y-3 px-6 pb-10">
-        <div className="flex items-center gap-3">
-          <span className="text-[11px] font-medium text-muted-foreground">
-            Templates
-          </span>
-          <span className="h-px flex-1 bg-border" />
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <IconUpload
-              className="size-3.5 text-muted-foreground"
-              strokeWidth={1.8}
-            />
-            {uploading ? "Uploading…" : "Upload SVG"}
-            <input
-              type="file"
-              accept=".svg,image/svg+xml"
-              className="sr-only"
-              disabled={uploading}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void handleUpload(file);
-                e.target.value = "";
-              }}
-            />
-          </label>
-          {TEMPLATES.map((template) => {
-            const Icon = template.icon;
-            return (
-              <button
-                key={template.label}
-                type="button"
-                onClick={() => start(template.prompt)}
-                className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Icon
-                  className="size-3.5 text-muted-foreground"
-                  strokeWidth={1.8}
-                />
-                {template.label}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
       <section className="mx-auto w-full max-w-5xl space-y-4 px-6 pb-16">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">My projects</h2>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-              {projects.length}
-            </span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div
+            role="group"
+            aria-label="Home sections"
+            className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5"
+          >
+            <TabButton
+              active={view === "projects"}
+              count={projects.length}
+              onClick={() => setView("projects")}
+            >
+              My projects
+            </TabButton>
+            <TabButton
+              active={view === "templates"}
+              count={MOTION_TEMPLATES.length}
+              onClick={() => setView("templates")}
+            >
+              Templates
+            </TabButton>
           </div>
-          <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-            {projectsQuery.isFetching ? (
-              <IconLoader2 className="size-3 animate-spin" />
-            ) : null}
-            Saved automatically
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              {projectsQuery.isFetching ? (
+                <IconLoader2 className="size-3 animate-spin" />
+              ) : null}
+              {view === "projects"
+                ? "Saved automatically"
+                : "Previewing slowly · click to add"}
+            </span>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <IconUpload
+                className="size-3.5 text-muted-foreground"
+                strokeWidth={1.8}
+              />
+              {uploading ? "Uploading…" : "Upload SVG"}
+              <input
+                type="file"
+                accept=".svg,image/svg+xml"
+                className="sr-only"
+                disabled={uploading}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void handleUpload(file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
         </div>
 
-        {projectsQuery.isLoading && projects.length === 0 ? (
+        {view === "templates" ? (
+          <div className="space-y-5">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {STARTER_TEMPLATES.map((template) => (
+                <TemplateCard
+                  key={template.id}
+                  template={template}
+                  busy={creatingTemplate === template.id}
+                  disabled={creatingTemplate !== null}
+                  onUse={() => void createFromTemplate(template)}
+                />
+              ))}
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <span className="text-[11px] font-medium text-muted-foreground">
+                Imported CSS
+              </span>
+              <span className="h-px flex-1 bg-border" />
+              <span className="text-[10px] text-muted-foreground">
+                plays exactly as authored · not on the timeline
+              </span>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {CSS_TEMPLATES.map((template) => (
+                <TemplateCard
+                  key={template.id}
+                  template={template}
+                  busy={creatingTemplate === template.id}
+                  disabled={creatingTemplate !== null}
+                  onUse={() => void createFromTemplate(template)}
+                />
+              ))}
+            </div>
+          </div>
+        ) : projectsQuery.isLoading && projects.length === 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="h-48 rounded-lg" />
@@ -229,16 +282,16 @@ export default function HomePage() {
             <div className="space-y-1">
               <p className="text-sm font-medium">No projects yet</p>
               <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-                Pick a template above or describe your own animation. The agent
-                will build it and open it in the studio.
+                Pick a template to open a ready-made animation, or describe your
+                own and the agent will build it.
               </p>
             </div>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => start(TEMPLATES[0]!.prompt)}
+              onClick={() => setView("templates")}
             >
-              Start with a logo reveal
+              Browse templates
             </Button>
           </div>
         ) : (
@@ -250,6 +303,129 @@ export default function HomePage() {
         )}
       </section>
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  count,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  count: number;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-[6px] px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+      <span
+        className={cn(
+          "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+          active ? "bg-muted text-foreground" : "bg-muted/60 text-muted-foreground",
+        )}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Template previews play on a slowed-down clock so the motion reads clearly
+ * while browsing, and every card is a real animated SVG — no video, no canvas.
+ */
+function TemplateCard({
+  template,
+  busy,
+  disabled,
+  onUse,
+}: {
+  template: MotionTemplate;
+  busy: boolean;
+  disabled: boolean;
+  onUse: () => void;
+}) {
+  const [src] = useState(() =>
+    template.src
+      ? template.src
+      : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+          toAnimatedSvg({
+            id: template.id,
+            title: template.label,
+            svg: template.svg ?? "",
+            tracks: template.tracks ?? [],
+            duration: Math.round(template.duration * PREVIEW_SPEED),
+            loop: template.loop,
+          }),
+        )}`,
+  );
+  const Icon = TEMPLATE_ICONS[template.icon];
+
+  return (
+    <button
+      type="button"
+      onClick={onUse}
+      disabled={disabled}
+      className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-70"
+    >
+      <div className="relative aspect-[16/10] overflow-hidden bg-muted">
+        <div
+          className="absolute inset-0 opacity-60"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at center, hsl(var(--border)) 1px, transparent 1px)",
+            backgroundSize: "18px 18px",
+          }}
+        />
+        <img
+          src={src}
+          alt={`${template.label} preview`}
+          loading="lazy"
+          className="relative h-full w-full object-contain p-5"
+        />
+        <span className="absolute right-2 top-2 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground backdrop-blur">
+          {template.loop ? "loop" : "once"}
+        </span>
+        {template.source === "css" ? (
+          <span className="absolute left-2 top-2 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground backdrop-blur">
+            CSS
+          </span>
+        ) : null}
+        {busy ? (
+          <span className="absolute inset-0 grid place-items-center bg-background/70 backdrop-blur-sm">
+            <IconLoader2 className="size-5 animate-spin text-foreground" />
+          </span>
+        ) : null}
+      </div>
+      <div className="flex items-center justify-between gap-2 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.8} />
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-medium">
+              {template.label}
+            </div>
+            <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+              {template.hint}
+            </div>
+          </div>
+        </div>
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+          {(template.duration / 1000).toFixed(1)}s
+        </span>
+      </div>
+    </button>
   );
 }
 
