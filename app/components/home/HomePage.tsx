@@ -23,7 +23,7 @@ import {
   IconSparkles,
   IconUpload,
 } from "@tabler/icons-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Button } from "@/components/ui/button";
@@ -39,9 +39,7 @@ import {
 import { TAB_ID } from "@/lib/tab-id";
 import { toAnimatedSvg, type MotionAnimation } from "../../../lib/motion";
 import {
-  CSS_TEMPLATES,
   MOTION_TEMPLATES,
-  STARTER_TEMPLATES,
   type MotionTemplate,
   type TemplateIconName,
 } from "../../../lib/templates";
@@ -51,9 +49,28 @@ const COMPOSER_PLACEHOLDER =
 
 /**
  * Template previews run on a slowed clock so browsing them reads as motion
- * design rather than flicker.
+ * design rather than flicker. Long choreographies are already slow-paced, so
+ * they play at their real speed instead of dragging on for minutes.
  */
 const PREVIEW_SPEED = 2.2;
+const PREVIEW_SLOW_MAX_MS = 8000;
+
+/**
+ * The big exports are fetched once per session: they carry ~1 MB of embedded
+ * art, and the preview needs the markup to rebuild the motion from its tracks.
+ */
+const templateSvgCache = new Map<string, Promise<string>>();
+function loadTemplateSvg(url: string) {
+  let cached = templateSvgCache.get(url);
+  if (!cached) {
+    cached = fetch(url).then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status} loading ${url}`);
+      return res.text();
+    });
+    templateSvgCache.set(url, cached);
+  }
+  return cached;
+}
 
 const TEMPLATE_ICONS: Record<TemplateIconName, typeof IconSparkles> = {
   sparkles: IconSparkles,
@@ -91,8 +108,8 @@ export default function HomePage() {
     if (creatingTemplate) return;
     setCreatingTemplate(template.id);
     try {
-      // Imported CSS templates keep their own <style> block and are fetched on
-      // demand so their embedded art stays out of the JS bundle.
+      // Big templates keep their art in /public and are fetched on demand so
+      // the embedded payload never enters the JS bundle.
       const svg = template.src
         ? await fetch(template.src).then((res) => {
             if (!res.ok) throw new Error(`HTTP ${res.status} loading ${template.src}`);
@@ -211,7 +228,7 @@ export default function HomePage() {
               ) : null}
               {view === "projects"
                 ? "Saved automatically"
-                : "Previewing slowly · click to add"}
+                : "Every preview is editable · click to add"}
             </span>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <IconUpload
@@ -235,38 +252,16 @@ export default function HomePage() {
         </div>
 
         {view === "templates" ? (
-          <div className="space-y-5">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {STARTER_TEMPLATES.map((template) => (
-                <TemplateCard
-                  key={template.id}
-                  template={template}
-                  busy={creatingTemplate === template.id}
-                  disabled={creatingTemplate !== null}
-                  onUse={() => void createFromTemplate(template)}
-                />
-              ))}
-            </div>
-            <div className="flex items-center gap-3 pt-1">
-              <span className="text-[11px] font-medium text-muted-foreground">
-                Imported CSS
-              </span>
-              <span className="h-px flex-1 bg-border" />
-              <span className="text-[10px] text-muted-foreground">
-                plays exactly as authored · not on the timeline
-              </span>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {CSS_TEMPLATES.map((template) => (
-                <TemplateCard
-                  key={template.id}
-                  template={template}
-                  busy={creatingTemplate === template.id}
-                  disabled={creatingTemplate !== null}
-                  onUse={() => void createFromTemplate(template)}
-                />
-              ))}
-            </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {MOTION_TEMPLATES.map((template) => (
+              <TemplateCard
+                key={template.id}
+                template={template}
+                busy={creatingTemplate === template.id}
+                disabled={creatingTemplate !== null}
+                onUse={() => void createFromTemplate(template)}
+              />
+            ))}
           </div>
         ) : projectsQuery.isLoading && projects.length === 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -357,20 +352,45 @@ function TemplateCard({
   disabled: boolean;
   onUse: () => void;
 }) {
-  const [src] = useState(() =>
-    template.src
-      ? template.src
-      : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-          toAnimatedSvg({
-            id: template.id,
-            title: template.label,
-            svg: template.svg ?? "",
-            tracks: template.tracks ?? [],
-            duration: Math.round(template.duration * PREVIEW_SPEED),
-            loop: template.loop,
-          }),
-        )}`,
-  );
+  const [svg, setSvg] = useState<string | null>(template.src ? null : template.svg ?? "");
+
+  useEffect(() => {
+    if (!template.src) {
+      setSvg(template.svg ?? "");
+      return;
+    }
+    let cancelled = false;
+    setSvg(null);
+    loadTemplateSvg(template.src)
+      .then((text) => {
+        if (!cancelled) setSvg(text);
+      })
+      .catch(() => {
+        if (!cancelled) setSvg(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [template.src, template.svg]);
+
+  const src = useMemo(() => {
+    if (!svg) return null;
+    const previewDuration =
+      template.duration <= PREVIEW_SLOW_MAX_MS
+        ? Math.round(template.duration * PREVIEW_SPEED)
+        : template.duration;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+      toAnimatedSvg({
+        id: template.id,
+        title: template.label,
+        svg,
+        tracks: template.tracks ?? [],
+        duration: previewDuration,
+        loop: template.loop,
+      }),
+    )}`;
+  }, [svg, template]);
+
   const Icon = TEMPLATE_ICONS[template.icon];
 
   return (
@@ -389,20 +409,21 @@ function TemplateCard({
             backgroundSize: "18px 18px",
           }}
         />
-        <img
-          src={src}
-          alt={`${template.label} preview`}
-          loading="lazy"
-          className="relative h-full w-full object-contain p-5"
-        />
+        {src ? (
+          <img
+            src={src}
+            alt={`${template.label} preview`}
+            loading="lazy"
+            className="relative h-full w-full object-contain p-5"
+          />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center">
+            <IconLoader2 className="size-4 animate-spin text-muted-foreground" />
+          </span>
+        )}
         <span className="absolute right-2 top-2 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground backdrop-blur">
           {template.loop ? "loop" : "once"}
         </span>
-        {template.source === "css" ? (
-          <span className="absolute left-2 top-2 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground backdrop-blur">
-            CSS
-          </span>
-        ) : null}
         {busy ? (
           <span className="absolute inset-0 grid place-items-center bg-background/70 backdrop-blur-sm">
             <IconLoader2 className="size-5 animate-spin text-foreground" />

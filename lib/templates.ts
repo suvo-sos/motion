@@ -1,4 +1,5 @@
 import type { Track } from "./motion";
+import { IMPORTED_TEMPLATES } from "./svgator-templates.generated";
 
 /**
  * Prebuilt starter projects.
@@ -13,6 +14,13 @@ import type { Track } from "./motion";
  *   thumbnails look finished before anything plays;
  * - looping templates start and end on the same pose so the animation seam is
  *   invisible (one-shot templates set `loop: false`).
+ *
+ * The last three are converted from SVGator CSS exports (see
+ * `scripts/import-svgator-templates.mjs`): their keyframes were translated
+ * into tracks so they edit like any other project, and the few properties the
+ * engine cannot express (`d`, `rx`/`ry`, `r`, `width`/`height`) stay in the
+ * SVG's own `<style>` block. Their art lives in `/public` so the embedded
+ * base64 payload never enters the JS bundle.
  */
 export interface MotionTemplate {
   /** Stable slug used for keys and selection state. */
@@ -23,16 +31,10 @@ export interface MotionTemplate {
   icon: TemplateIconName;
   duration: number;
   loop: boolean;
-  /**
-   * `timeline` = authored here as SVG + tracks, so every keyframe is editable.
-   * `css` = imported export that plays its own CSS animation verbatim, so its
-   * motion is exact but the timeline has no tracks to edit.
-   */
-  source: "timeline" | "css";
-  /** Inline SVG for timeline templates (small, ships with the bundle). */
+  /** Inline SVG for small templates that ship with the bundle. */
   svg?: string;
   tracks?: Track[];
-  /** Public URL for imported CSS templates (kept out of the bundle). */
+  /** Public URL for templates whose SVG is too large to inline. */
   src?: string;
 }
 
@@ -57,7 +59,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Logo reveal",
     hint: "Stroke draws on, then the mark pops in.",
     icon: "sparkles",
-    source: "timeline",
     duration: 1800,
     loop: false,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -103,7 +104,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Loading dots",
     hint: "Three dots bounce out of phase.",
     icon: "loader",
-    source: "timeline",
     duration: 1200,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -172,7 +172,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Sticker pop",
     hint: "Star springs in with a wobble.",
     icon: "bolt",
-    source: "timeline",
     duration: 1600,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -209,7 +208,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Spinner",
     hint: "Arc sweeps around a ring forever.",
     icon: "spinner",
-    source: "timeline",
     duration: 1000,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -235,7 +233,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Equalizer",
     hint: "Five bars rise and fall, out of phase.",
     icon: "bars",
-    source: "timeline",
     duration: 1200,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -318,7 +315,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Heartbeat",
     hint: "Double-thump pulse on a heart.",
     icon: "heart",
-    source: "timeline",
     duration: 1600,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -355,7 +351,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Orbit",
     hint: "A satellite circles a planet.",
     icon: "orbit",
-    source: "timeline",
     duration: 2400,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -392,7 +387,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     label: "Bounce",
     hint: "Ball drops with squash and stretch.",
     icon: "ball",
-    source: "timeline",
     duration: 1400,
     loop: true,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
@@ -460,50 +454,13 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
   },
 
   /* ------------------------------------------------------------------ *
-   * Imported CSS exports (SVGator). These keep their own <style> block,
-   * so the motion lands exactly as authored — including the pieces this
-   * engine cannot express as tracks (`d` morphs, rx/ry, matrix bases).
-   * They live in /public so ~1.2 MB of embedded art never enters the JS
-   * bundle, and they are saved with `tracks: []`.
+   * Converted SVGator exports — see lib/svgator-templates.generated.ts.
    * ------------------------------------------------------------------ */
-  {
-    id: "cup-game-loader",
-    label: "Cup game loader",
-    hint: "Full CSS game-loop choreography.",
-    icon: "loader",
-    source: "css",
-    src: "/templates/cup-game-loader.svg",
-    duration: 58065,
-    loop: true,
-  },
-  {
-    id: "brand-logo-reveal",
-    label: "Brand logo reveal",
-    hint: "Shape morph and staged logo build.",
-    icon: "sparkles",
-    source: "css",
-    src: "/templates/brand-logo-reveal.svg",
-    duration: 18868,
-    loop: false,
-  },
-  {
-    id: "app-download",
-    label: "App download promo",
-    hint: "Phone mockup with staged UI reveals.",
-    icon: "ball",
-    source: "css",
-    src: "/templates/app-download.svg",
-    duration: 51739,
-    loop: false,
-  },
+  ...IMPORTED_TEMPLATES.map((template) => ({
+    ...template,
+    icon: template.icon as TemplateIconName,
+  })),
 ];
-
-export const STARTER_TEMPLATES = MOTION_TEMPLATES.filter(
-  (template) => template.source === "timeline",
-);
-export const CSS_TEMPLATES = MOTION_TEMPLATES.filter(
-  (template) => template.source === "css",
-);
 
 export function findTemplate(id: string): MotionTemplate | undefined {
   return MOTION_TEMPLATES.find((template) => template.id === id);

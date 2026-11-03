@@ -51,7 +51,7 @@ How to author an animation:
 - Never include <script> or external URLs; the output must be a self-contained SVG.
 - Use at least two moving layers (a primary move plus a supporting move 30-50% smaller, offset by 50-150ms) so the result feels designed, not mechanical.
 - After saving, reply with the animation title and tell the user it is open at /motion?id=<id>. Use navigate with path "/motion" and query "id=<id>" when supported.
-- The app ships eight ready-made starter projects in lib/templates.ts (logo-reveal, loading-dots, sticker-pop, spinner, equalizer, heartbeat, orbit, bounce). If a user asks for one of those, reuse the template's svg and tracks with save-animation (adapting colors or text is fine) instead of redrawing it from scratch; the home screen creates the same templates directly.
+- The app ships eleven ready-made starter projects in lib/templates.ts: eight hand-authored ones (logo-reveal, loading-dots, sticker-pop, spinner, equalizer, heartbeat, orbit, bounce) plus three converted SVGator exports (cup-game-loader, brand-logo-reveal, app-download). All of them are editable SVG + tracks. If a user asks for one of those, reuse the template's svg and tracks with save-animation (adapting colors or text is fine) instead of redrawing it from scratch; the home screen creates the same templates directly. The three converted ones keep their art in public/templates and their tracks in lib/svgator-templates.generated.ts.
 
 SVG Structure Requirements (CRITICAL):
 1. ALWAYS include xmlns="http://www.w3.org/2000/svg" in the <svg> tag
