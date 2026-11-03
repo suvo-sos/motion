@@ -15,6 +15,11 @@ export default defineConfig({
       // Studio route (/motion) deps.
       "react-colorful",
       "@radix-ui/react-context-menu",
+      // Boolean path ops in motion.tsx load this dynamically; without
+      // pre-bundling, AgentKit's noDiscovery mode makes Vite re-optimize
+      // mid-session, drop the HMR socket ('socket hang up'), and force a
+      // full reload when the op is first used.
+      "polygon-clipping",
     ],
     entries: [
       "app/entry.client.tsx",

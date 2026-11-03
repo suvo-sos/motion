@@ -23,7 +23,7 @@ const messages = {
     emptyState: "何でも聞いてください",
     heroDescription: "このアプリの確認、説明、変更をエージェントに依頼します。",
     heroTitle: "どのようにお手伝いできますか？",
-    inspectEmptyState: "このアプリについて何でも聞いてください",
+    inspectEmptyState: "編集・追加したい内容を何でも聞いてください",
     inspectSuggestionAction: "利用可能なアクションを表示",
     inspectSuggestionCapabilities: "このアプリで何ができますか？",
     inspectSuggestionHello: "使い始めを手伝って",

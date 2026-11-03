@@ -1,9 +1,11 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ComponentType,
   type ReactNode,
 } from "react";
 import { Link, useSearchParams } from "react-router";
@@ -15,49 +17,77 @@ import {
 import { AgentToggleButton } from "@agent-native/toolkit/app/chat";
 import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
 import {
-  IconAdjustmentsHorizontal,
+  IconAdjustmentsHorizontalFilled,
   IconArrowBackUp,
   IconArrowForwardUp,
+  IconArrowUp,
+  IconArrowDown,
+  IconArrowBarToUp,
+  IconArrowBarToDown,
   IconBrush,
   IconCheck,
+  IconCheckFilled,
   IconChevronDown,
+  IconChevronDownFilled,
   IconChevronRight,
-  IconCircle,
+  IconChevronRightFilled,
+  IconCircleFilled,
   IconDiamond,
   IconDiamondFilled,
-  IconDownload,
-  IconEye,
+  IconDownloadFilled,
+  IconEditFilled,
+  IconEyeFilled,
   IconEyeOff,
-  IconFolder,
-  IconFolderOpen,
+  IconFocusCentered,
+  IconFolderFilled,
+  IconFolderOpenFilled,
   IconFrame,
-  IconFolderPlus,
-  IconHandMove,
+  IconHandStop,
+  IconHandGrab,
   IconLetterT,
-  IconLink,
-  IconLock,
+  IconLinkFilled,
+  IconLockFilled,
   IconLockOpen,
-  IconMaximize,
-  IconPhoto,
+  IconLine,
+  IconOvalFilled,
+  IconPencilFilled,
+  IconPhotoFilled,
   IconPlayerPauseFilled,
   IconPlayerPlayFilled,
-  IconPlayerSkipBack,
+  IconPlayerSkipBackFilled,
   IconPlus,
-  IconPointer,
+  IconPlusFilled,
+  IconPointerFilled,
+  IconRectangleFilled,
   IconRepeat,
-  IconSearch,
+  IconScaleFilled,
+  IconSearchFilled,
   IconShape,
-  IconSparkles,
-  IconSquare,
-  IconTrash,
+  IconSparklesFilled,
+  IconSquareFilled,
+  IconStarFilled,
+  IconTransformFilled,
+  IconTriangleFilled,
+  IconTriangleSquareCircle,
+  IconTrashFilled,
   IconVector,
+  IconVectorBezier,
   IconX,
   IconZoomIn,
   IconZoomOut,
 } from "@tabler/icons-react";
 import { toast } from "sonner";
+import { MousePointer2, Hand, PenTool, Edit, Scale } from "lucide-react";
+import { Frame, Palette, Grid2x2 } from "lucide-react";
+import { Anchor } from "lucide-react";
 import { SvgExportDialog } from "../components/SvgExportDialog";
-import { HexAlphaColorPicker } from "react-colorful";
+// polygon-clipping is loaded dynamically inside handleBooleanOp, not as a
+// static import: a missing node_modules entry must not crash the whole
+// studio route at load time (it did — 'Cannot find module' on dev start
+// when the package had not been installed yet). If the dynamic import
+// fails, the handler tells the user to run pnpm install and restart dev.
+import { askAgentAboutElement } from "../lib/agent-element-context";
+import { ColorPicker } from "@/components/ui/color-picker";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -104,7 +134,7 @@ import {
   type Property,
   type Track,
 } from "../../lib/motion";
-import { runExport, type ExportFormat } from "../../lib/export";
+import { runExport, type ExportFormat, type ExportRenderOptions } from "../../lib/export";
 import {
   getMotionEditorActions,
   publishMotionEditor,
@@ -192,6 +222,44 @@ const TEXT_ANCHOR_OPTIONS = [
   { value: "end", label: "Right" },
 ];
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+const SHAPE_FILL = "#2391FF";
+const SHAPE_STROKE = "#2391FF";
+
+/** Elements the studio can create without the agent. */
+type AddableElement =
+  | "rect"
+  | "roundRect"
+  | "circle"
+  | "ellipse"
+  | "triangle"
+  | "star"
+  | "line"
+  | "text"
+  | "g";
+
+/** Star/polygon points for an n-pointed star centred on (cx, cy). */
+function starPoints(
+  cx: number,
+  cy: number,
+  outer: number,
+  inner: number,
+  points = 5,
+): string {
+  const coords: string[] = [];
+  for (let i = 0; i < points * 2; i += 1) {
+    const radius = i % 2 === 0 ? outer : inner;
+    const angle = (Math.PI / points) * i - Math.PI / 2;
+    coords.push(
+      `${(cx + radius * Math.cos(angle)).toFixed(2)},${(
+        cy +
+        radius * Math.sin(angle)
+      ).toFixed(2)}`,
+    );
+  }
+  return coords.join(" ");
+}
+
 interface Selection {
   track: number;
   keyframe: number;
@@ -201,6 +269,8 @@ interface StudioSnapshot {
   tracks: Track[];
   duration: number;
   loop: boolean;
+  /** The artwork itself — without this, undo could only rewind keyframes, never a delete, node edit, or group change. */
+  svg: string;
 }
 
 function cloneTracks(tracks: Track[]): Track[] {
@@ -406,6 +476,8 @@ export default function MotionRoute() {
   const [timelineHeight, setTimelineHeight] = useState(256);
   const undoRef = useRef<() => void>(() => {});
   const redoRef = useRef<() => void>(() => {});
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const { prompt, dialog: promptDialog } = usePromptDialog();
   const [params, setParams] = useSearchParams();
   const list = useActionQuery(
@@ -488,6 +560,31 @@ export default function MotionRoute() {
     const { hidden, locked } = getHiddenAndLockedIds(animation.svg);
     setHiddenIds(hidden);
     setLockedIds(locked);
+
+    // Ensure every element has a stable id so it can be selected and edited
+    // in the Properties panel (unnamed elements like background rects otherwise
+    // can't be targeted).
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    let changed = false;
+    const walk = (node: Element) => {
+      if (node.nodeName.toLowerCase() === "svg") {
+        // skip root
+      } else if (node.nodeType === 1) {
+        if (!node.getAttribute("id")) {
+          node.setAttribute(
+            "id",
+            `${node.nodeName.toLowerCase()}-${Math.random().toString(36).substring(2, 6)}`,
+          );
+          changed = true;
+        }
+      }
+      Array.from(node.children).forEach(walk);
+    };
+    walk(doc.documentElement);
+    if (changed) {
+      const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+      void saveAnimation({ ...animation, svg: nextSvg });
+    }
   }, [animation?.id]);
 
   const select = (id: string | null) => {
@@ -831,52 +928,120 @@ export default function MotionRoute() {
     await saveAnimation({ ...animation, svg: nextSvg });
   };
 
-  const handleAddElement = async (type: "rect" | "circle" | "text" | "g") => {
+  const handleImportSvg = async (svgText: string) => {
+    if (!animation) return;
+    const nextSvg = mergeSvgIntoArtboard(animation.svg, svgText);
+    if (!nextSvg) {
+      toast.error("Could not import that SVG — check it is a valid <svg> file.");
+      return;
+    }
+    await saveAnimation({ ...animation, svg: nextSvg });
+    toast.success("SVG imported");
+  };
+
+  const handleAddElement = async (type: AddableElement) => {
     if (!animation) return;
     const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
     const svgEl = doc.documentElement;
     const vb = svgEl.getAttribute("viewBox")?.split(/\s+/).map(Number) || [0, 0, 200, 200];
-    const cx = Math.round((vb[0] ?? 0) + (vb[2] || 200) / 2);
-    const cy = Math.round((vb[1] ?? 0) + (vb[3] || 200) / 2);
+    const vbX = vb[0] ?? 0;
+    const vbY = vb[1] ?? 0;
+    const vbWidth = vb[2] || 200;
+    const vbHeight = vb[3] || 200;
+    const cx = vbX + vbWidth / 2;
+    const cy = vbY + vbHeight / 2;
+    // Scale the new shape with the artboard so it looks right on any canvas.
+    const size = Math.max(24, Math.round(Math.min(vbWidth, vbHeight) * 0.34));
+    const half = size / 2;
+    const round = (value: number) => Math.round(value * 100) / 100;
 
-    const id = `${type}-${Math.random().toString(36).substring(2, 6)}`;
+    const id = `${type === "roundRect" ? "rect" : type}-${Math.random()
+      .toString(36)
+      .substring(2, 6)}`;
+    const create = (tag: string) => doc.createElementNS(SVG_NS, tag);
+
     let newEl: Element;
-
-    if (type === "rect") {
-      newEl = doc.createElementNS("http://www.w3.org/2000/svg", "rect");
-      newEl.setAttribute("id", id);
-      newEl.setAttribute("x", String(cx - 30));
-      newEl.setAttribute("y", String(cy - 30));
-      newEl.setAttribute("width", "60");
-      newEl.setAttribute("height", "60");
-      newEl.setAttribute("rx", "6");
-      newEl.setAttribute("fill", "#2391FF");
-    } else if (type === "circle") {
-      newEl = doc.createElementNS("http://www.w3.org/2000/svg", "circle");
-      newEl.setAttribute("id", id);
-      newEl.setAttribute("cx", String(cx));
-      newEl.setAttribute("cy", String(cy));
-      newEl.setAttribute("r", "28");
-      newEl.setAttribute("fill", "#2391FF");
-    } else if (type === "text") {
-      newEl = doc.createElementNS("http://www.w3.org/2000/svg", "text");
-      newEl.setAttribute("id", id);
-      newEl.setAttribute("x", String(cx));
-      newEl.setAttribute("y", String(cy));
-      newEl.setAttribute("text-anchor", "middle");
-      newEl.setAttribute("dominant-baseline", "middle");
-      newEl.setAttribute("fill", "#171717");
-      newEl.setAttribute("font-size", "20");
-      newEl.setAttribute(
-        "font-family",
-        '"Inter", "Inter Variable", ui-sans-serif, system-ui, sans-serif',
-      );
-      newEl.setAttribute("font-weight", "600");
-      newEl.textContent = "Motion";
-    } else {
-      newEl = doc.createElementNS("http://www.w3.org/2000/svg", "g");
-      newEl.setAttribute("id", id);
+    switch (type) {
+      case "rect":
+      case "roundRect": {
+        newEl = create("rect");
+        newEl.setAttribute("x", String(round(cx - half)));
+        newEl.setAttribute("y", String(round(cy - half)));
+        newEl.setAttribute("width", String(size));
+        newEl.setAttribute("height", String(size));
+        if (type === "roundRect") {
+          newEl.setAttribute("rx", String(Math.round(size * 0.18)));
+        }
+        newEl.setAttribute("fill", SHAPE_FILL);
+        break;
+      }
+      case "ellipse": {
+        newEl = create("ellipse");
+        newEl.setAttribute("cx", String(round(cx)));
+        newEl.setAttribute("cy", String(round(cy)));
+        newEl.setAttribute("rx", String(round(half)));
+        newEl.setAttribute("ry", String(round(half * 0.72)));
+        newEl.setAttribute("fill", SHAPE_FILL);
+        break;
+      }
+      case "triangle": {
+        newEl = create("polygon");
+        newEl.setAttribute(
+          "points",
+          `${round(cx)},${round(cy - half)} ${round(cx + half)},${round(
+            cy + half,
+          )} ${round(cx - half)},${round(cy + half)}`,
+        );
+        newEl.setAttribute("fill", SHAPE_FILL);
+        break;
+      }
+      case "star": {
+        newEl = create("polygon");
+        newEl.setAttribute(
+          "points",
+          starPoints(cx, cy, half, half * 0.42),
+        );
+        newEl.setAttribute("fill", SHAPE_FILL);
+        break;
+      }
+      case "line": {
+        newEl = create("line");
+        newEl.setAttribute("x1", String(round(cx - half)));
+        newEl.setAttribute("y1", String(round(cy - half)));
+        newEl.setAttribute("x2", String(round(cx + half)));
+        newEl.setAttribute("y2", String(round(cy + half)));
+        newEl.setAttribute("stroke", SHAPE_STROKE);
+        newEl.setAttribute("stroke-width", String(Math.max(2, Math.round(size / 16))));
+        newEl.setAttribute("stroke-linecap", "round");
+        newEl.setAttribute("fill", "none");
+        break;
+      }
+      case "text": {
+        newEl = create("text");
+        newEl.setAttribute("x", String(round(cx)));
+        newEl.setAttribute("y", String(round(cy)));
+        newEl.setAttribute("text-anchor", "middle");
+        newEl.setAttribute("dominant-baseline", "middle");
+        newEl.setAttribute("fill", "#171717");
+        newEl.setAttribute(
+          "font-size",
+          String(Math.max(12, Math.round(Math.min(vbWidth, vbHeight) * 0.1))),
+        );
+        newEl.setAttribute(
+          "font-family",
+          '"Inter", "Inter Variable", ui-sans-serif, system-ui, sans-serif',
+        );
+        newEl.setAttribute("font-weight", "600");
+        newEl.textContent = "Text";
+        break;
+      }
+      default: {
+        newEl = create("g");
+        break;
+      }
     }
+
+    newEl.setAttribute("id", id);
 
     const selected = selectedElementId
       ? doc.getElementById(selectedElementId)
@@ -889,18 +1054,77 @@ export default function MotionRoute() {
     setSelectedElementId(id);
   };
 
+  /**
+   * Commit a freehand path drawn with the pen tool. Points are artboard units;
+   * the pen closes the path when the user clicks the first point again.
+   */
+  const handleAddPath = async (
+    points: Array<{ x: number; y: number; outX?: number; outY?: number; inX?: number; inY?: number }>,
+    closed: boolean,
+  ) => {
+    if (!animation || points.length < 2) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const svgEl = doc.documentElement;
+    const round = (value: number) => Math.round(value * 100) / 100;
+    // Bezier segments where the pen was click-dragged, straight lines otherwise.
+    let d = `M ${round(points[0]!.x)} ${round(points[0]!.y)}`;
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1]!;
+      const cur = points[i]!;
+      if (prev.outX !== undefined || cur.inX !== undefined) {
+        d += ` C ${round(prev.outX ?? prev.x)} ${round(prev.outY ?? prev.y)} ${round(cur.inX ?? cur.x)} ${round(cur.inY ?? cur.y)} ${round(cur.x)} ${round(cur.y)}`;
+      } else {
+        d += ` L ${round(cur.x)} ${round(cur.y)}`;
+      }
+    }
+    if (closed) d += " Z";
+
+    const id = `path-${Math.random().toString(36).substring(2, 6)}`;
+    const pathEl = doc.createElementNS(SVG_NS, "path");
+    pathEl.setAttribute("id", id);
+    pathEl.setAttribute("d", d);
+    if (closed) {
+      pathEl.setAttribute("fill", SHAPE_FILL);
+    } else {
+      pathEl.setAttribute("fill", "none");
+      pathEl.setAttribute("stroke", SHAPE_STROKE);
+      pathEl.setAttribute("stroke-width", "3");
+      pathEl.setAttribute("stroke-linecap", "round");
+      pathEl.setAttribute("stroke-linejoin", "round");
+    }
+
+    const selected = selectedElementId
+      ? doc.getElementById(selectedElementId)
+      : null;
+    const host =
+      selected && selected.nodeName.toLowerCase() === "g" ? selected : svgEl;
+    host.appendChild(pathEl);
+    const nextSvg = new XMLSerializer().serializeToString(svgEl);
+    await saveAnimation({ ...animation, svg: nextSvg });
+    setSelectedElementId(id);
+  };
+
   const handleAddImage = async (data: File | string) => {
     if (!animation) return;
     const insertImage = async (href: string, naturalW = 100, naturalH = 100) => {
       const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
       const svgEl = doc.documentElement;
       const vb = svgEl.getAttribute("viewBox")?.split(/\s+/).map(Number) || [0, 0, 200, 200];
-      const maxW = (vb[2] || 200) * 0.5;
+      const vbWidth = vb[2] || 200;
+      const vbHeight = vb[3] || 200;
+      const maxW = vbWidth * 0.55;
+      const maxH = vbHeight * 0.55;
       const aspect = naturalW / naturalH || 1;
-      const width = Math.round(Math.min(maxW, 80));
-      const height = Math.round(width / aspect);
-      const cx = Math.round((vb[0] ?? 0) + (vb[2] || 200) / 2 - width / 2);
-      const cy = Math.round((vb[1] ?? 0) + (vb[3] || 200) / 2 - height / 2);
+      let width = Math.round(maxW);
+      let height = Math.round(width / aspect);
+      if (height > maxH) {
+        height = Math.round(maxH);
+        width = Math.round(height * aspect);
+      }
+      width = Math.max(1, width);
+      height = Math.max(1, height);
+      const cx = Math.round((vb[0] ?? 0) + vbWidth / 2 - width / 2);
+      const cy = Math.round((vb[1] ?? 0) + vbHeight / 2 - height / 2);
 
       const id = `image-${Math.random().toString(36).substring(2, 6)}`;
       const imageEl = doc.createElementNS("http://www.w3.org/2000/svg", "image");
@@ -910,6 +1134,7 @@ export default function MotionRoute() {
       imageEl.setAttribute("y", String(cy));
       imageEl.setAttribute("width", String(width));
       imageEl.setAttribute("height", String(height));
+      imageEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
       const selected =
         selectedElementId && selectedElementId !== id
@@ -968,11 +1193,14 @@ export default function MotionRoute() {
           onUnlockAll={handleUnlockAll}
           onAddElement={handleAddElement}
           onAddImage={handleAddImage}
+          onImportSvg={handleImportSvg}
           onTitleChange={setTitle}
           onSave={saveAnimation}
           onPreviewSvg={setPreviewSvg}
           onUndo={() => undoRef.current?.()}
           onRedo={() => redoRef.current?.()}
+          canUndo={canUndo}
+          canRedo={canRedo}
         />
       </div>
 
@@ -1012,10 +1240,17 @@ export default function MotionRoute() {
               undoRef.current = u;
               redoRef.current = r;
             }}
+            onHistoryChange={(nextCanUndo, nextCanRedo) => {
+              setCanUndo(nextCanUndo);
+              setCanRedo(nextCanRedo);
+            }}
             selectedElementId={selectedElementId}
             onSelectElement={setSelectedElementId}
             hiddenIds={hiddenIds}
             lockedIds={lockedIds}
+            onAddImage={handleAddImage}
+            onAddElement={handleAddElement}
+            onAddPath={handleAddPath}
           />
         )}
       </div>
@@ -1123,18 +1358,18 @@ function getElementIcon(tag: string, isExpanded: boolean) {
       return { Icon: IconFrame, color: "text-blue-500 dark:text-blue-400" };
     case "g":
       return {
-        Icon: isExpanded ? IconFolderOpen : IconFolder,
+        Icon: isExpanded ? IconFolderOpenFilled : IconFolderFilled,
         color: "text-amber-500 dark:text-amber-400",
       };
     case "image":
     case "img":
-      return { Icon: IconPhoto, color: "text-sky-500 dark:text-sky-400" };
+      return { Icon: IconPhotoFilled, color: "text-sky-500 dark:text-sky-400" };
     case "rect":
     case "foreignobject":
-      return { Icon: IconSquare, color: "text-emerald-500 dark:text-emerald-400" };
+      return { Icon: IconSquareFilled, color: "text-emerald-500 dark:text-emerald-400" };
     case "circle":
     case "ellipse":
-      return { Icon: IconCircle, color: "text-violet-500 dark:text-violet-400" };
+      return { Icon: IconCircleFilled, color: "text-violet-500 dark:text-violet-400" };
     case "path":
     case "polygon":
     case "polyline":
@@ -1177,8 +1412,379 @@ function getElementLabel(node: TreeNode): string {
   return ELEMENT_LABELS[tag] ?? node.tag;
 }
 
+function parsePointsAttr(value: string): { x: number; y: number }[] {
+  const nums = value
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map(Number);
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    const x = nums[i];
+    const y = nums[i + 1];
+    if (x !== undefined && y !== undefined && Number.isFinite(x) && Number.isFinite(y)) {
+      pts.push({ x, y });
+    }
+  }
+  return pts;
+}
+
 const TREE_INDENT = 16;
 const TREE_BASE = 8;
+
+type PathSegment = { cmd: string; nums: number[] };
+
+const PATH_ARITY: Record<string, number> = {
+  M: 2,
+  L: 2,
+  H: 1,
+  V: 1,
+  C: 6,
+  S: 4,
+  Q: 4,
+  T: 2,
+  A: 7,
+  Z: 0,
+};
+
+/**
+ * Split a path `d` into segments, preserving command order and every
+ * numeric parameter (including arc flags and curve control points).
+ * The old parser only read M/L pairs, so dragging a curved path rewrote
+ * it as straight lines and destroyed the curves. This parser keeps them.
+ */
+function parsePathSegments(d: string): PathSegment[] {
+  const tokens =
+    d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g) ?? [];
+  const segments: PathSegment[] = [];
+  let cmd = "";
+  let nums: number[] = [];
+  const flush = () => {
+    // Only push a segment that actually collected numbers: after a moveto
+    // flushes on arity, its implicit lineto command is pending with an
+    // empty buffer, and pushing it would invent a phantom (0, 0) node.
+    if (!cmd || nums.length === 0) return;
+    segments.push({ cmd, nums });
+    nums = [];
+  };
+  for (const token of tokens) {
+    if (/[a-zA-Z]/.test(token)) {
+      flush();
+      cmd = token;
+      if (cmd.toUpperCase() === "Z") {
+        segments.push({ cmd: "Z", nums: [] });
+        cmd = "";
+      }
+      continue;
+    }
+    if (!cmd) continue;
+    nums.push(Number(token));
+    const arity = PATH_ARITY[cmd.toUpperCase()] ?? 0;
+    if (arity > 0 && nums.length >= arity) {
+      // A moveto's extra pairs are implicit linetos, per the SVG spec.
+      const outCmd = cmd;
+      flush();
+      cmd =
+        outCmd === "M" ? "L" : outCmd === "m" ? "l" : outCmd;
+    }
+  }
+  flush();
+  return segments;
+}
+
+/** Every editable point of a path, in segment order: endpoints plus curve
+ * control points. Coordinates are resolved to absolute values, so relative
+ * commands still show their nodes in the right place on canvas. */
+function pathPointsFromSegments(
+  segments: PathSegment[],
+): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  let curX = 0;
+  let curY = 0;
+  let startX = 0;
+  let startY = 0;
+  const abs = (cmd: string, i: number, base: number, nums: number[]) =>
+    (cmd === cmd.toLowerCase() ? base : 0) + (nums[i] ?? 0);
+  for (const seg of segments) {
+    const cmd = seg.cmd;
+    const upper = cmd.toUpperCase();
+    const n = seg.nums;
+    if (upper === "Z") {
+      curX = startX;
+      curY = startY;
+      continue;
+    }
+    if (upper === "M") {
+      curX = abs(cmd, 0, curX, n);
+      curY = abs(cmd, 1, curY, n);
+      startX = curX;
+      startY = curY;
+      pts.push({ x: curX, y: curY });
+    } else if (upper === "L" || upper === "T") {
+      curX = abs(cmd, 0, curX, n);
+      curY = abs(cmd, 1, curY, n);
+      pts.push({ x: curX, y: curY });
+    } else if (upper === "H") {
+      curX = abs(cmd, 0, curX, n);
+      pts.push({ x: curX, y: curY });
+    } else if (upper === "V") {
+      curY = abs(cmd, 0, curY, n);
+      pts.push({ x: curX, y: curY });
+    } else if (upper === "C") {
+      pts.push(
+        { x: abs(cmd, 0, curX, n), y: abs(cmd, 1, curY, n) },
+        { x: abs(cmd, 2, curX, n), y: abs(cmd, 3, curY, n) },
+        { x: abs(cmd, 4, curX, n), y: abs(cmd, 5, curY, n) },
+      );
+      curX = abs(cmd, 4, curX, n);
+      curY = abs(cmd, 5, curY, n);
+    } else if (upper === "S") {
+      pts.push(
+        { x: abs(cmd, 0, curX, n), y: abs(cmd, 1, curY, n) },
+        { x: abs(cmd, 2, curX, n), y: abs(cmd, 3, curY, n) },
+      );
+      curX = abs(cmd, 2, curX, n);
+      curY = abs(cmd, 3, curY, n);
+    } else if (upper === "Q") {
+      pts.push(
+        { x: abs(cmd, 0, curX, n), y: abs(cmd, 1, curY, n) },
+        { x: abs(cmd, 2, curX, n), y: abs(cmd, 3, curY, n) },
+      );
+      curX = abs(cmd, 2, curX, n);
+      curY = abs(cmd, 3, curY, n);
+    } else if (upper === "A") {
+      curX = abs(cmd, 5, curX, n);
+      curY = abs(cmd, 6, curY, n);
+      pts.push({ x: curX, y: curY });
+    }
+  }
+  return pts;
+}
+
+function parsePathPoints(d: string): { x: number; y: number }[] {
+  return pathPointsFromSegments(parsePathSegments(d));
+}
+
+/**
+ * Rewrite a path with new node positions, keeping every original command
+ * and every non-position parameter (arc radii/flags, etc.). Output is
+ * absolute and H/V become L, which is geometrically identical. Returns
+ * null when the point count does not match, so a bad edit never corrupts
+ * the path — the caller must then leave `d` unchanged.
+ */
+function serializePathWithPoints(
+  segments: PathSegment[],
+  pts: Array<{ x: number; y: number }>,
+): string | null {
+  const r = (v: number) => Math.round(v * 100) / 100;
+  let idx = 0;
+  const next = () => pts[idx++]!;
+  const out: string[] = [];
+  for (const seg of segments) {
+    const upper = seg.cmd.toUpperCase();
+    if (upper === "Z") {
+      out.push("Z");
+      continue;
+    }
+    const n = [...seg.nums];
+    if (upper === "M" || upper === "L" || upper === "T") {
+      const p = next();
+      if (!p) return null;
+      n[0] = r(p.x);
+      n[1] = r(p.y);
+      out.push(`${upper} ${n.join(" ")}`);
+    } else if (upper === "H" || upper === "V") {
+      const p = next();
+      if (!p) return null;
+      out.push(`L ${r(p.x)} ${r(p.y)}`);
+    } else if (upper === "C") {
+      const a = next();
+      const b = next();
+      const c = next();
+      if (!a || !b || !c) return null;
+      n[0] = r(a.x);
+      n[1] = r(a.y);
+      n[2] = r(b.x);
+      n[3] = r(b.y);
+      n[4] = r(c.x);
+      n[5] = r(c.y);
+      out.push(`C ${n.join(" ")}`);
+    } else if (upper === "S" || upper === "Q") {
+      const a = next();
+      const b = next();
+      if (!a || !b) return null;
+      n[0] = r(a.x);
+      n[1] = r(a.y);
+      n[2] = r(b.x);
+      n[3] = r(b.y);
+      out.push(`${upper} ${n.join(" ")}`);
+    } else if (upper === "A") {
+      const p = next();
+      if (!p) return null;
+      n[5] = r(p.x);
+      n[6] = r(p.y);
+      out.push(`A ${n.join(" ")}`);
+    } else {
+      out.push(`${upper} ${n.join(" ")}`);
+    }
+  }
+  if (idx !== pts.length) return null;
+  return out.join(" ");
+}
+
+function bezierHandleInfo(segments: PathSegment[], pts: Array<{ x: number; y: number }>) {
+  const lines: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+  const controlIndices = new Set<number>();
+  const opposite = new Map<number, number>();
+  const anchorOfControl = new Map<number, number>();
+  const smoothCandidates = new Set<number>();
+  const incomingC = new Map<number, number>();
+  const outgoingC = new Map<number, number>();
+  let idx = 0;
+  let cur: { x: number; y: number } | null = null;
+  let start: { x: number; y: number } | null = null;
+  const at = (i: number) => pts[i];
+  for (const seg of segments) {
+    const upper = seg.cmd.toUpperCase();
+    if (upper === "Z") { cur = start; continue; }
+    if (upper === "M") { const p = at(idx++); if (!p) break; cur = p; start = p; }
+    else if (upper === "L" || upper === "H" || upper === "V" || upper === "T" || upper === "A") { const p = at(idx++); if (!p) break; cur = p; }
+    else if (upper === "C") {
+      const c1 = at(idx); const c2 = at(idx + 1); const end = at(idx + 2);
+      if (!c1 || !c2 || !end) break;
+      if (cur) lines.push({ x1: cur.x, y1: cur.y, x2: c1.x, y2: c1.y });
+      lines.push({ x1: c2.x, y1: c2.y, x2: end.x, y2: end.y });
+      controlIndices.add(idx); controlIndices.add(idx + 1);
+      outgoingC.set(idx - 1, idx); incomingC.set(idx + 2, idx + 1);
+      anchorOfControl.set(idx, idx - 1); anchorOfControl.set(idx + 1, idx + 2);
+      cur = end; idx += 3;
+    } else if (upper === "S") {
+      const c = at(idx); const end = at(idx + 1); if (!c || !end) break;
+      lines.push({ x1: c.x, y1: c.y, x2: end.x, y2: end.y });
+      controlIndices.add(idx); anchorOfControl.set(idx, idx + 1); cur = end; idx += 2;
+    } else if (upper === "Q") {
+      const c = at(idx); const end = at(idx + 1); if (!c || !end) break;
+      if (cur) lines.push({ x1: cur.x, y1: cur.y, x2: c.x, y2: c.y });
+      lines.push({ x1: c.x, y1: c.y, x2: end.x, y2: end.y });
+      controlIndices.add(idx); anchorOfControl.set(idx, idx + 1); cur = end; idx += 2;
+    }
+  }
+  for (const [anchor, incoming] of incomingC) {
+    const outgoing = outgoingC.get(anchor);
+    if (outgoing === undefined) continue;
+    smoothCandidates.add(anchor);
+    opposite.set(incoming, outgoing); opposite.set(outgoing, incoming);
+  }
+  return { lines, controlIndices, opposite, anchorOfControl, smoothCandidates };
+}
+
+function mergeSvgIntoArtboard(currentSvg: string, importedText: string): string | null {
+  try {
+    const curDoc = new DOMParser().parseFromString(currentSvg, "image/svg+xml");
+    const impDoc = new DOMParser().parseFromString(importedText, "image/svg+xml");
+    const curRoot = curDoc.documentElement;
+    const impRoot = impDoc.documentElement;
+    if (!curRoot || curRoot.nodeName.toLowerCase() !== "svg") return null;
+    if (!impRoot || impRoot.nodeName.toLowerCase() !== "svg") return null;
+    // Sanitise: no scripts, no foreignObject (it can carry HTML/scripts),
+    // no event-handler attributes, no javascript: hrefs, no <style> (inline
+    // SVG style can leak into the page).
+    impDoc.querySelectorAll("script, foreignObject, style").forEach((n) => n.remove());
+    impDoc.querySelectorAll("*").forEach((el) => {
+      Array.from(el.attributes).forEach((attr) => {
+        if (attr.name.toLowerCase().startsWith("on")) el.removeAttribute(attr.name);
+        if ((attr.name === "href" || attr.name === "xlink:href") && attr.value.trim().toLowerCase().startsWith("javascript:")) el.removeAttribute(attr.name);
+      });
+    });
+    // Remap ids that collide with the current document, and update references.
+    const existingIds = new Set<string>();
+    curDoc.querySelectorAll("[id]").forEach((el) => { const id = el.getAttribute("id"); if (id) existingIds.add(id); });
+    const idMap = new Map<string, string>();
+    impDoc.querySelectorAll("[id]").forEach((el) => {
+      const oldId = el.getAttribute("id");
+      if (!oldId) return;
+      if (existingIds.has(oldId) || idMap.has(oldId)) {
+        let next = `${oldId}-import`;
+        let n = 2;
+        while (existingIds.has(next) || Array.from(idMap.values()).includes(next)) { next = `${oldId}-import-${n++}`; }
+        idMap.set(oldId, next);
+        el.setAttribute("id", next);
+      } else {
+        existingIds.add(oldId);
+      }
+    });
+    if (idMap.size > 0) {
+      impDoc.querySelectorAll("*").forEach((el) => {
+        Array.from(el.attributes).forEach((attr) => {
+          let v = attr.value;
+          idMap.forEach((next, oldId) => {
+            v = v.split(`url(#${oldId})`).join(`url(#${next})`);
+            if (attr.name === "href" || attr.name === "xlink:href") v = v.split(`#${oldId}`).join(`#${next}`);
+          });
+          if (v !== attr.value) el.setAttribute(attr.name, v);
+        });
+      });
+    }
+    // Copy imported defs (gradients, filters, markers) into the current defs.
+    const impDefs = impRoot.querySelector("defs");
+    if (impDefs && impDefs.children.length > 0) {
+      let curDefs = curRoot.querySelector("defs");
+      if (!curDefs) {
+        curDefs = curDoc.createElementNS("http://www.w3.org/2000/svg", "defs");
+        curRoot.insertBefore(curDefs, curRoot.firstChild);
+      }
+      Array.from(impDefs.children).forEach((child) => { curDefs!.appendChild(curDoc.importNode(child, true)); });
+    }
+    // Fit the imported artwork into the current artboard: scale down only
+    // if it is larger, then centre it. Small artwork keeps its size.
+    const parseVb = (s: string | null) => {
+      const parts = (s || "").split(/[\s,]+/).map(Number);
+      return parts.length === 4 && parts.every(Number.isFinite) ? parts : null;
+    };
+    const curVb = parseVb(curRoot.getAttribute("viewBox")) || [0, 0, 200, 200];
+    const impVb = parseVb(impRoot.getAttribute("viewBox"));
+    const children = Array.from(impRoot.children).filter((c) => c.nodeName.toLowerCase() !== "defs");
+    if (children.length === 0) return null;
+    let host: Element = curRoot;
+    if (impVb) {
+      const scale = Math.min(1, curVb[2]! / impVb[2]!, curVb[3]! / impVb[3]!);
+      const tx = curVb[0]! + (curVb[2]! - impVb[2]! * scale) / 2 - impVb[0]! * scale;
+      const ty = curVb[1]! + (curVb[3]! - impVb[3]! * scale) / 2 - impVb[1]! * scale;
+      if (scale !== 1 || tx !== 0 || ty !== 0) {
+        const g = curDoc.createElementNS("http://www.w3.org/2000/svg", "g");
+        g.setAttribute("transform", `translate(${Math.round(tx * 100) / 100} ${Math.round(ty * 100) / 100}) scale(${Math.round(scale * 100) / 100})`);
+        curRoot.appendChild(g);
+        host = g;
+      }
+    }
+    children.forEach((child) => { host.appendChild(curDoc.importNode(child, true)); });
+    return new XMLSerializer().serializeToString(curRoot);
+  } catch {
+    return null;
+  }
+}
+
+function ElementThumb({
+  src,
+  Icon,
+}: {
+  src?: string | undefined;
+  Icon: ComponentType<{ className?: string }>;
+}) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  if (!src || failedSrc === src) {
+    return <Icon className="size-3.5" />;
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      onError={() => setFailedSrc(src)}
+      className="size-3.5 rounded-[2px] border border-border/60 object-cover"
+    />
+  );
+}
 
 function TreeLines({
   depth,
@@ -1237,8 +1843,10 @@ function ElementRow({
   isLocked,
   isHidden,
   hasTracks,
+  imageSrc,
   onToggleCollapse,
   onSelect,
+  onSelectNode,
   onToggleLock,
   onToggleHide,
   onRename,
@@ -1247,10 +1855,15 @@ function ElementRow({
   onEditImageSource,
   onEditPath,
   onEditAttributes,
+  onAskAi,
   moveTargets,
   onGroupElement,
   onUngroupElement,
   onMoveElement,
+  onBringToFront,
+  onBringForward,
+  onSendBackward,
+  onSendToBack,
 }: {
   node: TreeNode;
   depth: number;
@@ -1262,8 +1875,15 @@ function ElementRow({
   isLocked: boolean;
   isHidden: boolean;
   hasTracks: boolean;
+  imageSrc?: string | undefined;
   onToggleCollapse: (key: string) => void;
   onSelect: (id: string | null, additive: boolean) => void;
+  /**
+   * Tap-to-select for any row, including elements that have no id yet.
+   * When present, ElementRow prefers this over onSelect so an id-less
+   * element can be given an id and selected without clicking it on canvas.
+   */
+  onSelectNode?: (node: TreeNode, additive: boolean) => void;
   onToggleLock: (node: TreeNode) => void;
   onToggleHide: (node: TreeNode) => void;
   onRename: (node: TreeNode) => void;
@@ -1272,10 +1892,15 @@ function ElementRow({
   onEditImageSource: (node: TreeNode) => void;
   onEditPath: (node: TreeNode) => void;
   onEditAttributes: (node: TreeNode) => void;
+  onAskAi: (node: TreeNode) => void;
   moveTargets: MoveTarget[];
   onGroupElement: (node: TreeNode) => void;
   onUngroupElement: (node: TreeNode) => void;
   onMoveElement: (node: TreeNode, targetPath: string | null) => void;
+  onBringToFront: (node: TreeNode) => void;
+  onBringForward: (node: TreeNode) => void;
+  onSendBackward: (node: TreeNode) => void;
+  onSendToBack: (node: TreeNode) => void;
 }) {
   const { Icon, color } = getElementIcon(node.tag, !isCollapsed);
   const nodeKey = node.id || node.path;
@@ -1297,7 +1922,15 @@ function ElementRow({
           style={{ paddingLeft: TREE_BASE + depth * TREE_INDENT }}
           title={`${label} · ${node.tag}`}
           onClick={(event) => {
-            if (!node.id) return;
+            // Tapping a row in Elements selects it on canvas, even if the
+            // element has no id yet and the cursor never touches the canvas.
+            if (onSelectNode) {
+              onSelectNode(node, event.metaKey || event.ctrlKey);
+              return;
+            }
+            if (!node.id) {
+              return;
+            }
             onSelect(node.id, event.metaKey || event.ctrlKey);
           }}
           onDoubleClick={() => onRename(node)}
@@ -1320,9 +1953,9 @@ function ElementRow({
               title={isCollapsed ? "Expand" : "Collapse"}
             >
               {isCollapsed ? (
-                <IconChevronRight className="size-3" />
+                <IconChevronRightFilled className="size-3" />
               ) : (
-                <IconChevronDown className="size-3" />
+                <IconChevronDownFilled className="size-3" />
               )}
             </button>
           ) : (
@@ -1333,7 +1966,7 @@ function ElementRow({
           <span
             className={`mr-1.5 grid size-4 shrink-0 place-items-center ${color}`}
           >
-            <Icon className="size-3.5" />
+            <ElementThumb src={imageSrc} Icon={Icon} />
           </span>
 
           {/* Name (no leading hash — the icon communicates the type) */}
@@ -1380,7 +2013,7 @@ function ElementRow({
                 title={isLocked ? "Unlock element" : "Lock element"}
               >
                 {isLocked ? (
-                  <IconLock className="size-3" />
+                  <IconLockFilled className="size-3" />
                 ) : (
                   <IconLockOpen className="size-3" />
                 )}
@@ -1402,7 +2035,7 @@ function ElementRow({
                 {isHidden ? (
                   <IconEyeOff className="size-3" />
                 ) : (
-                  <IconEye className="size-3" />
+                  <IconEyeFilled className="size-3" />
                 )}
               </button>
             </div>
@@ -1415,6 +2048,21 @@ function ElementRow({
       {/* Context Menu */}
       <ContextMenuPrimitive.Portal>
         <ContextMenuPrimitive.Content className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-80">
+          {/* Hand the element to the agent: it lands as a context chip in the
+              composer so the user can just describe the change they want. */}
+          <ContextMenuPrimitive.Item
+            className="flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+            onSelect={() => onAskAi(node)}
+          >
+            <span className="flex items-center gap-2">
+              <IconSparklesFilled className="size-3.5 text-[#2391FF]" />
+              <span>Ask AI</span>
+            </span>
+            <span className="text-[10px] text-muted-foreground">tag element</span>
+          </ContextMenuPrimitive.Item>
+
+          <div className="my-1 h-px bg-border" />
+
           {node.id ? (
             <>
               <ContextMenuPrimitive.Item
@@ -1458,7 +2106,7 @@ function ElementRow({
               className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
               onSelect={() => onEditImageSource(node)}
             >
-              <IconPhoto className="size-3.5 text-sky-500" />
+              <IconPhotoFilled className="size-3.5 text-sky-500" />
               <span>Edit Image Source</span>
             </ContextMenuPrimitive.Item>
           ) : null}
@@ -1477,12 +2125,54 @@ function ElementRow({
             className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
             onSelect={() => onEditAttributes(node)}
           >
-            <IconAdjustmentsHorizontal className="size-3.5 text-primary" />
+            <IconAdjustmentsHorizontalFilled className="size-3.5 text-primary" />
             <span>Edit Attribute...</span>
           </ContextMenuPrimitive.Item>
 
           {node.path ? (
             <>
+              <div className="my-1 h-px bg-border" />
+              <ContextMenuPrimitive.Sub>
+                <ContextMenuPrimitive.SubTrigger className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent">
+                  <span className="flex items-center gap-2">
+                    <IconTransformFilled className="size-3.5 text-primary" />
+                    <span>Arrange</span>
+                  </span>
+                  <IconChevronRight className="size-3.5 text-muted-foreground" />
+                </ContextMenuPrimitive.SubTrigger>
+                <ContextMenuPrimitive.Portal>
+                  <ContextMenuPrimitive.SubContent className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onBringToFront(node)}
+                    >
+                      <IconArrowBarToUp className="size-3.5 text-blue-500" />
+                      <span>Bring to Front</span>
+                    </ContextMenuPrimitive.Item>
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onBringForward(node)}
+                    >
+                      <IconArrowUp className="size-3.5 text-blue-400" />
+                      <span>Bring Forward</span>
+                    </ContextMenuPrimitive.Item>
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onSendBackward(node)}
+                    >
+                      <IconArrowDown className="size-3.5 text-orange-400" />
+                      <span>Send Backward</span>
+                    </ContextMenuPrimitive.Item>
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onSendToBack(node)}
+                    >
+                      <IconArrowBarToDown className="size-3.5 text-orange-500" />
+                      <span>Send to Back</span>
+                    </ContextMenuPrimitive.Item>
+                  </ContextMenuPrimitive.SubContent>
+                </ContextMenuPrimitive.Portal>
+              </ContextMenuPrimitive.Sub>
               <div className="my-1 h-px bg-border" />
               <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Structure
@@ -1491,7 +2181,7 @@ function ElementRow({
                 className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
                 onSelect={() => onGroupElement(node)}
               >
-                <IconFolderPlus className="size-3.5 text-amber-500" />
+                <IconFolderFilled className="size-3.5 text-amber-500" />
                 <span>Group</span>
               </ContextMenuPrimitive.Item>
               {isGroup && node.hasChildren ? (
@@ -1499,7 +2189,7 @@ function ElementRow({
                   className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
                   onSelect={() => onUngroupElement(node)}
                 >
-                  <IconFolderOpen className="size-3.5 text-amber-500" />
+                  <IconFolderOpenFilled className="size-3.5 text-amber-500" />
                   <span>Ungroup</span>
                 </ContextMenuPrimitive.Item>
               ) : null}
@@ -1507,7 +2197,7 @@ function ElementRow({
                 <ContextMenuPrimitive.Sub>
                   <ContextMenuPrimitive.SubTrigger className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent">
                     <span className="flex items-center gap-2">
-                      <IconFolder className="size-3.5 text-muted-foreground" />
+                      <IconFolderFilled className="size-3.5 text-muted-foreground" />
                       <span>Move into</span>
                     </span>
                     <IconChevronRight className="size-3.5 text-muted-foreground" />
@@ -1527,7 +2217,7 @@ function ElementRow({
                           className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
                           onSelect={() => onMoveElement(node, target.path)}
                         >
-                          <IconFolder className="size-3.5 text-amber-500" />
+                          <IconFolderFilled className="size-3.5 text-amber-500" />
                           <span
                             className="min-w-0 truncate"
                             style={{ paddingLeft: target.depth * 8 }}
@@ -1550,7 +2240,7 @@ function ElementRow({
             onSelect={() => onToggleLock(node)}
           >
             <span>{isLocked ? "Unlock Element" : "Lock Element"}</span>
-            {isLocked ? <IconLock className="size-3.5 text-amber-500" /> : <IconLockOpen className="size-3.5 text-muted-foreground" />}
+            {isLocked ? <IconLockFilled className="size-3.5 text-amber-500" /> : <IconLockOpen className="size-3.5 text-muted-foreground" />}
           </ContextMenuPrimitive.Item>
 
           <ContextMenuPrimitive.Item
@@ -1558,7 +2248,7 @@ function ElementRow({
             onSelect={() => onToggleHide(node)}
           >
             <span>{isHidden ? "Show Element" : "Hide Element"}</span>
-            {isHidden ? <IconEyeOff className="size-3.5 text-muted-foreground" /> : <IconEye className="size-3.5 text-muted-foreground" />}
+            {isHidden ? <IconEyeOff className="size-3.5 text-muted-foreground" /> : <IconEyeFilled className="size-3.5 text-muted-foreground" />}
           </ContextMenuPrimitive.Item>
 
           <div className="my-1 h-px bg-border" />
@@ -1574,6 +2264,45 @@ function ElementRow({
     </ContextMenuPrimitive.Root>
   );
 }
+
+// Memoised row: the Elements tree re-renders on every sidebar state change,
+// but a row only needs to update when its own node/flags change. Arrays
+// (ancestorContinues, moveTargets) are compared by content, not identity,
+// because renderNode builds fresh arrays each pass.
+const MemoElementRow = memo(ElementRow, (prev, next) =>
+  prev.node === next.node &&
+  prev.depth === next.depth &&
+  prev.isLast === next.isLast &&
+  prev.ancestorContinues.join(",") === next.ancestorContinues.join(",") &&
+  prev.isCollapsed === next.isCollapsed &&
+  prev.isSelected === next.isSelected &&
+  prev.isPrimary === next.isPrimary &&
+  prev.isLocked === next.isLocked &&
+  prev.isHidden === next.isHidden &&
+  prev.hasTracks === next.hasTracks &&
+  prev.imageSrc === next.imageSrc &&
+  prev.moveTargets.length === next.moveTargets.length &&
+  prev.moveTargets.every((t, i) => t.path === next.moveTargets[i]?.path) &&
+  prev.onToggleCollapse === next.onToggleCollapse &&
+  prev.onSelect === next.onSelect &&
+  prev.onSelectNode === next.onSelectNode &&
+  prev.onToggleLock === next.onToggleLock &&
+  prev.onToggleHide === next.onToggleHide &&
+  prev.onRename === next.onRename &&
+  prev.onDelete === next.onDelete &&
+  prev.onEditText === next.onEditText &&
+  prev.onEditImageSource === next.onEditImageSource &&
+  prev.onEditPath === next.onEditPath &&
+  prev.onEditAttributes === next.onEditAttributes &&
+  prev.onAskAi === next.onAskAi &&
+  prev.onGroupElement === next.onGroupElement &&
+  prev.onUngroupElement === next.onUngroupElement &&
+  prev.onMoveElement === next.onMoveElement &&
+  prev.onBringToFront === next.onBringToFront &&
+  prev.onBringForward === next.onBringForward &&
+  prev.onSendBackward === next.onSendBackward &&
+  prev.onSendToBack === next.onSendToBack,
+);
 
 function PropertiesPanel({
   animation,
@@ -1597,6 +2326,7 @@ function PropertiesPanel({
       "link",
       "appearance",
       "filters",
+      "attributes",
     ])
   );
   const [localAttributes, setLocalAttributes] = useState<Record<string, string>>({});
@@ -1604,6 +2334,7 @@ function PropertiesPanel({
   const saveTimeoutRef = useRef<number | null>(null);
   const draftSvgRef = useRef<string>("");
   const pendingSvgRef = useRef<string | null>(null);
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
   const latestAnimationRef = useRef<MotionAnimation | null>(animation ?? null);
 
   useEffect(() => {
@@ -1644,6 +2375,36 @@ function PropertiesPanel({
     },
     [selectedElementId, onPreviewSvg, scheduleSave],
   );
+
+  // Like applySvgUpdate, but for edits that touch the whole document
+  // (gradients, markers and filters live in <defs>, not on the element).
+  const applyDocUpdate = useCallback(
+    (mutator: (doc: Document, el: Element) => void) => {
+      const latest = latestAnimationRef.current;
+      if (!latest || !selectedElementId) return;
+      const source = draftSvgRef.current || latest.svg;
+      const doc = new DOMParser().parseFromString(source, "image/svg+xml");
+      const el = doc.getElementById(selectedElementId);
+      if (!el) return;
+      mutator(doc, el);
+      const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+      draftSvgRef.current = nextSvg;
+      pendingSvgRef.current = nextSvg;
+      onPreviewSvg?.(nextSvg);
+      scheduleSave();
+    },
+    [selectedElementId, onPreviewSvg, scheduleSave],
+  );
+
+  const ensureDefs = (doc: Document): Element => {
+    const root = doc.documentElement;
+    let defs = root.querySelector("defs");
+    if (!defs) {
+      defs = doc.createElementNS("http://www.w3.org/2000/svg", "defs");
+      root.insertBefore(defs, root.firstChild);
+    }
+    return defs;
+  };
 
   const selectedElement = useMemo(() => {
     if (!animation || !selectedElementId) return null;
@@ -1717,6 +2478,260 @@ function PropertiesPanel({
     });
   };
 
+  // Gradient state for the selected element, read from the document's defs.
+  const gradientInfo = useMemo(() => {
+    if (!animation?.svg || !selectedElementId) return null;
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const el = doc.getElementById(selectedElementId);
+      if (!el) return null;
+      const fill = el.getAttribute("fill") || "";
+      const m = /^url\(#([^)]+)\)$/.exec(fill.trim());
+      if (!m) return null;
+      const grad = doc.getElementById(m[1]!);
+      if (!grad) return null;
+      const tag = grad.tagName.toLowerCase();
+      if (tag !== "lineargradient" && tag !== "radialgradient") return null;
+      const stops = Array.from(grad.querySelectorAll("stop")).map((s) => ({
+        offset: s.getAttribute("offset") || "0%",
+        color: s.getAttribute("stop-color") || "#000000",
+      }));
+      if (stops.length === 0) return null;
+      let angle = 90;
+      if (tag === "lineargradient") {
+        const x1 = parseFloat(grad.getAttribute("x1") || "0");
+        const y1 = parseFloat(grad.getAttribute("y1") || "0");
+        const x2 = parseFloat(grad.getAttribute("x2") || "1");
+        const y2 = parseFloat(grad.getAttribute("y2") || "0");
+        angle = Math.round(((Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI + 360) % 360);
+      }
+      return { id: m[1]!, type: tag, stops, angle };
+    } catch {
+      return null;
+    }
+  }, [animation?.svg, selectedElementId]);
+
+  const updateGradient = (type: "solid" | "lineargradient" | "radialgradient", stops: Array<{ color: string }>, angle = 90) => {
+    if (type === "solid") {
+      const color = stops[0]?.color || "#000000";
+      updateAttribute("fill", color);
+      return;
+    }
+    const start = stops[0]?.color || "#2391FF";
+    const end = stops[1]?.color || "#ffffff";
+    const existingId = gradientInfo?.id;
+    const gradId = existingId && gradientInfo?.type === type ? existingId : `grad-${Math.random().toString(36).substring(2, 6)}`;
+    applyDocUpdate((doc, el) => {
+      const defs = ensureDefs(doc);
+      let grad = doc.getElementById(gradId);
+      if (!grad || grad.tagName.toLowerCase() !== type) {
+        grad = doc.createElementNS("http://www.w3.org/2000/svg", type);
+        grad.setAttribute("id", gradId);
+        defs.appendChild(grad);
+      }
+      if (type === "lineargradient") {
+        const rad = (angle * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        grad.setAttribute("x1", String(Math.round((0.5 - 0.5 * cos) * 100) / 100));
+        grad.setAttribute("y1", String(Math.round((0.5 - 0.5 * sin) * 100) / 100));
+        grad.setAttribute("x2", String(Math.round((0.5 + 0.5 * cos) * 100) / 100));
+        grad.setAttribute("y2", String(Math.round((0.5 + 0.5 * sin) * 100) / 100));
+      } else {
+        grad.setAttribute("cx", "0.5");
+        grad.setAttribute("cy", "0.5");
+        grad.setAttribute("r", "0.5");
+      }
+      while (grad.firstChild) grad.removeChild(grad.firstChild);
+      const mkStop = (offset: string, color: string) => {
+        const s = doc.createElementNS("http://www.w3.org/2000/svg", "stop");
+        s.setAttribute("offset", offset);
+        s.setAttribute("stop-color", color);
+        return s;
+      };
+      grad.appendChild(mkStop("0%", start));
+      grad.appendChild(mkStop("100%", end));
+      el.setAttribute("fill", `url(#${gradId})`);
+    });
+    setLocalAttributes((prev) => ({ ...prev, fill: `url(#${gradId})` }));
+  };
+
+  // Pattern fill: a <pattern> def tiled over the element. The pattern type
+  // is stored on the def as data-pattern-type so it can be read back.
+  const patternInfo = useMemo(() => {
+    if (!animation?.svg || !selectedElementId) return null;
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const el = doc.getElementById(selectedElementId);
+      if (!el) return null;
+      const m = /^url\(#([^)]+)\)$/.exec((el.getAttribute("fill") || "").trim());
+      if (!m) return null;
+      const pat = doc.getElementById(m[1]!);
+      if (!pat || pat.tagName.toLowerCase() !== "pattern") return null;
+      const children = Array.from(pat.children);
+      const bg = children[0]?.getAttribute("fill") || "#ffffff";
+      const fgEl = children[1];
+      const fg = fgEl?.getAttribute("fill") || fgEl?.getAttribute("stroke") || "#2391FF";
+      const size = parseFloat(pat.getAttribute("width") || "20") || 20;
+      return { id: m[1]!, type: pat.getAttribute("data-pattern-type") || "dots", bg, fg, size };
+    } catch {
+      return null;
+    }
+  }, [animation?.svg, selectedElementId]);
+
+  const updatePattern = (type: "dots" | "stripes" | "checker" | "grid", fg: string, bg: string, size: number) => {
+    const patId = patternInfo?.id || `pattern-${Math.random().toString(36).substring(2, 6)}`;
+    applyDocUpdate((doc, el) => {
+      const defs = ensureDefs(doc);
+      let pat = doc.getElementById(patId);
+      if (!pat || pat.tagName.toLowerCase() !== "pattern") {
+        pat = doc.createElementNS("http://www.w3.org/2000/svg", "pattern");
+        pat.setAttribute("id", patId);
+        defs.appendChild(pat);
+      }
+      pat.setAttribute("patternUnits", "userSpaceOnUse");
+      pat.setAttribute("width", String(size));
+      pat.setAttribute("height", String(size));
+      pat.setAttribute("data-pattern-type", type);
+      while (pat.firstChild) pat.removeChild(pat.firstChild);
+      const rect = (x: number, y: number, w: number, h: number, fill: string) => {
+        const r = doc.createElementNS("http://www.w3.org/2000/svg", "rect");
+        r.setAttribute("x", String(x)); r.setAttribute("y", String(y));
+        r.setAttribute("width", String(w)); r.setAttribute("height", String(h));
+        r.setAttribute("fill", fill);
+        return r;
+      };
+      pat.appendChild(rect(0, 0, size, size, bg));
+      if (type === "dots") {
+        const c = doc.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", String(size / 2)); c.setAttribute("cy", String(size / 2));
+        c.setAttribute("r", String(Math.max(1, size * 0.18))); c.setAttribute("fill", fg);
+        pat.appendChild(c);
+      } else if (type === "stripes") {
+        pat.appendChild(rect(0, 0, size * 0.35, size, fg));
+      } else if (type === "checker") {
+        pat.appendChild(rect(0, 0, size / 2, size / 2, fg));
+        pat.appendChild(rect(size / 2, size / 2, size / 2, size / 2, fg));
+      } else {
+        const p = doc.createElementNS("http://www.w3.org/2000/svg", "path");
+        p.setAttribute("d", `M ${size} 0 V ${size} M 0 ${size} H ${size}`);
+        p.setAttribute("fill", "none"); p.setAttribute("stroke", fg); p.setAttribute("stroke-width", "1");
+        pat.appendChild(p);
+      }
+      el.setAttribute("fill", `url(#${patId})`);
+    });
+    setLocalAttributes((prev) => ({ ...prev, fill: `url(#${patId})` }));
+  };
+
+  // Marker (arrowhead/dot) for stroke ends, created in defs on demand.
+  const updateMarker = (position: "start" | "end", kind: "none" | "arrow" | "dot") => {
+    const attr = position === "start" ? "marker-start" : "marker-end";
+    if (kind === "none") {
+      updateAttribute(attr, "");
+      return;
+    }
+    const markerId = `marker-${kind}-${position}`;
+    applyDocUpdate((doc, el) => {
+      const defs = ensureDefs(doc);
+      let marker = doc.getElementById(markerId);
+      if (!marker) {
+        marker = doc.createElementNS("http://www.w3.org/2000/svg", "marker");
+        marker.setAttribute("id", markerId);
+        marker.setAttribute("markerWidth", "10");
+        marker.setAttribute("markerHeight", "10");
+        marker.setAttribute("refX", position === "start" ? "1" : "9");
+        marker.setAttribute("refY", "3");
+        marker.setAttribute("orient", "auto");
+        const shape = doc.createElementNS("http://www.w3.org/2000/svg", kind === "arrow" ? "path" : "circle");
+        if (kind === "arrow") {
+          shape.setAttribute("d", position === "start" ? "M9,0 L9,6 L0,3 z" : "M0,0 L0,6 L9,3 z");
+        } else {
+          shape.setAttribute("cx", "3");
+          shape.setAttribute("cy", "3");
+          shape.setAttribute("r", "3");
+        }
+        shape.setAttribute("fill", "context-stroke");
+        marker.appendChild(shape);
+        defs.appendChild(marker);
+      }
+      el.setAttribute(attr, `url(#${markerId})`);
+    });
+    setLocalAttributes((prev) => ({ ...prev, [attr]: `url(#${markerId})` }));
+  };
+
+  const filterInfo = useMemo(() => {
+    if (!animation?.svg || !selectedElementId) return null;
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const el = doc.getElementById(selectedElementId);
+      if (!el) return null;
+      const m = /^url\(#([^)]+)\)$/.exec((el.getAttribute("filter") || "").trim());
+      if (!m) return null;
+      const filter = doc.getElementById(m[1]!);
+      if (!filter) return null;
+      const first = filter.firstElementChild?.tagName.toLowerCase();
+      if (first === "fegaussianblur") return "Blur";
+      if (first === "fedropshadow") return "Drop shadow";
+      return null;
+    } catch {
+      return null;
+    }
+  }, [animation?.svg, selectedElementId]);
+
+  // Colours already used in this file, for the colour picker's Document palette.
+  const documentColors = useMemo(() => {
+    if (!animation?.svg) return [];
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const found: string[] = [];
+      doc.querySelectorAll("*").forEach((el) => {
+        ["fill", "stroke", "stop-color"].forEach((attr) => {
+          const v = el.getAttribute(attr);
+          if (v && /^#[0-9a-f]{3,8}$/i.test(v.trim()) && !found.some((c) => c.toLowerCase() === v.trim().toLowerCase())) found.push(v.trim());
+        });
+      });
+      return found.slice(0, 12);
+    } catch {
+      return [];
+    }
+  }, [animation?.svg]);
+
+  const updateFilter = (kind: "none" | "blur" | "shadow", blur = 4) => {
+    if (kind === "none") {
+      updateAttribute("filter", "");
+      return;
+    }
+    const safeId = (selectedElementId || "el").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filterId = `filter-${safeId}`;
+    applyDocUpdate((doc, el) => {
+      const defs = ensureDefs(doc);
+      let filter = doc.getElementById(filterId);
+      if (!filter) {
+        filter = doc.createElementNS("http://www.w3.org/2000/svg", "filter");
+        filter.setAttribute("id", filterId);
+        filter.setAttribute("x", "-20%");
+        filter.setAttribute("y", "-20%");
+        filter.setAttribute("width", "140%");
+        filter.setAttribute("height", "140%");
+        defs.appendChild(filter);
+      }
+      while (filter.firstChild) filter.removeChild(filter.firstChild);
+      const prim = doc.createElementNS("http://www.w3.org/2000/svg", kind === "blur" ? "feGaussianBlur" : "feDropShadow");
+      if (kind === "blur") {
+        prim.setAttribute("stdDeviation", String(blur));
+      } else {
+        prim.setAttribute("dx", "0");
+        prim.setAttribute("dy", "4");
+        prim.setAttribute("stdDeviation", String(blur));
+        prim.setAttribute("flood-color", "#000000");
+        prim.setAttribute("flood-opacity", "0.25");
+      }
+      filter.appendChild(prim);
+      el.setAttribute("filter", `url(#${filterId})`);
+    });
+    setLocalAttributes((prev) => ({ ...prev, filter: `url(#${filterId})` }));
+  };
+
   const updateTextContent = useCallback(
     (value: string) => {
       setLocalTextContent(value);
@@ -1742,7 +2757,7 @@ function PropertiesPanel({
     return (
       <div className="flex h-full flex-col items-center justify-center p-6 text-center">
         <div className="rounded-full bg-muted p-4 mb-3">
-          <IconAdjustmentsHorizontal className="size-8 text-muted-foreground" />
+          <IconAdjustmentsHorizontalFilled className="size-8 text-muted-foreground" />
         </div>
         <h3 className="text-sm font-semibold text-foreground mb-1">No Selection</h3>
         <p className="text-xs text-muted-foreground">
@@ -1785,7 +2800,7 @@ function PropertiesPanel({
         {/* Animate Section */}
         <PropertySection
           title="Animate"
-          icon={<IconSparkles className="size-4" />}
+          icon={<IconSparklesFilled className="size-4" />}
           isExpanded={expanded.has("animate")}
           onToggle={() => toggleSection("animate")}
         >
@@ -1803,49 +2818,104 @@ function PropertiesPanel({
           onToggle={() => toggleSection("group")}
         >
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              <PropertyFieldWithUnit
-                label="X"
-                value={attrs.x || attrs.cx || "0"}
-                unit="x"
-                onChange={(v) => {
-                  const attr = selectedElement.tag === "circle" ? "cx" : "x";
-                  updateAttribute(attr, v);
-                }}
-              />
-              <PropertyFieldWithUnit
-                label="Y"
-                value={attrs.y || attrs.cy || "0"}
-                unit="y"
-                onChange={(v) => {
-                  const attr = selectedElement.tag === "circle" ? "cy" : "y";
-                  updateAttribute(attr, v);
-                }}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <PropertyFieldWithUnit
-                label="W"
-                value={attrs.width || "0"}
-                unit="w"
-                onChange={(v) => updateAttribute("width", v)}
-              />
-              <PropertyFieldWithUnit
-                label="H"
-                value={attrs.height || "0"}
-                unit="h"
-                onChange={(v) => updateAttribute("height", v)}
-              />
-            </div>
-            {(selectedElement.tag === "text" || selectedElement.tag === "tspan") && (
-              <PropertyField
-                label="Content"
-                value={textContent}
-                onChange={(v) => updateTextContent(v)}
-                multiline
-              />
-            )}
-          </div>
+          {(() => {
+            const tag = selectedElement.tag;
+            const supportsSize =
+              tag !== "text" &&
+              tag !== "tspan" &&
+              tag !== "path" &&
+              tag !== "polygon" &&
+              tag !== "polyline" &&
+              tag !== "line" &&
+              tag !== "g" &&
+              tag !== "svg";
+            const isCircle = tag === "circle";
+            const isEllipse = tag === "ellipse";
+            const sizeAttr = (axis: "w" | "h") => {
+              if (isCircle) return "r";
+              if (isEllipse) return axis === "w" ? "rx" : "ry";
+              return axis === "w" ? "width" : "height";
+            };
+            const sizeValue = (axis: "w" | "h") => {
+              if (isCircle) {
+                const r = parseFloat(attrs.r || "0") || 0;
+                return String(Math.round(r * 2));
+              }
+              if (isEllipse) {
+                const r = parseFloat(
+                  (axis === "w" ? attrs.rx : attrs.ry) || "0",
+                ) || 0;
+                return String(Math.round(r * 2));
+              }
+              return attrs[axis === "w" ? "width" : "height"] || "0";
+            };
+            const setSize = (axis: "w" | "h", value: string) => {
+              if (isCircle) {
+                updateAttribute("r", String((parseFloat(value) || 0) / 2));
+                return;
+              }
+              if (isEllipse) {
+                updateAttribute(
+                  axis === "w" ? "rx" : "ry",
+                  String((parseFloat(value) || 0) / 2),
+                );
+                return;
+              }
+              updateAttribute(axis === "w" ? "width" : "height", value);
+            };
+            return (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <PropertyFieldWithUnit
+                    label="X"
+                    value={attrs.x || attrs.cx || "0"}
+                    unit="x"
+                    onChange={(v) => {
+                      const attr =
+                        isCircle || isEllipse ? "cx" : "x";
+                      updateAttribute(attr, v);
+                    }}
+                  />
+                  <PropertyFieldWithUnit
+                    label="Y"
+                    value={attrs.y || attrs.cy || "0"}
+                    unit="y"
+                    onChange={(v) => {
+                      const attr =
+                        isCircle || isEllipse ? "cy" : "y";
+                      updateAttribute(attr, v);
+                    }}
+                  />
+                </div>
+                {supportsSize ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <PropertyFieldWithUnit
+                      label="W"
+                      value={sizeValue("w")}
+                      unit="w"
+                      onChange={(v) => setSize("w", v)}
+                    />
+                    <PropertyFieldWithUnit
+                      label="H"
+                      value={sizeValue("h")}
+                      unit="h"
+                      onChange={(v) => setSize("h", v)}
+                    />
+                  </div>
+                ) : null}
+                {(selectedElement.tag === "text" ||
+                  selectedElement.tag === "tspan") && (
+                  <PropertyField
+                    label="Content"
+                    value={textContent}
+                    onChange={(v) => updateTextContent(v)}
+                    multiline
+                  />
+                )}
+              </>
+            );
+          })()}
+        </div>
         </PropertySection>
 
         {/* Typography Section — fonts, weight, spacing and live preview */}
@@ -1927,19 +2997,136 @@ function PropertiesPanel({
           </PropertySection>
         )}
 
-        {/* Link Section */}
+        {/* Image Section */}
         {selectedElement.tag === "image" && (
           <PropertySection
-            title="Link"
+            title="Image"
+            icon={<IconPhotoFilled className="size-4" />}
             isExpanded={expanded.has("link")}
             onToggle={() => toggleSection("link")}
           >
-            <PropertyField
-              label="Image URL"
-              value={attrs.href || attrs["xlink:href"] || ""}
-              onChange={(v) => updateAttribute("href", v)}
-              placeholder="https://..."
-            />
+            <div className="space-y-3">
+              <div
+                className="grid h-24 place-items-center overflow-hidden rounded-md border border-border"
+                style={{
+                  backgroundImage:
+                    "repeating-conic-gradient(#d4d4d4 0% 25%, #ffffff 0% 50%)",
+                  backgroundSize: "14px 14px",
+                }}
+              >
+                {attrs.href || attrs["xlink:href"] ? (
+                  <img
+                    src={attrs.href || attrs["xlink:href"]}
+                    alt="Selected image preview"
+                    className="max-h-full max-w-full object-contain"
+                  />
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">
+                    No image source
+                  </span>
+                )}
+              </div>
+
+              <PropertyField
+                label="Image URL or data URI"
+                value={attrs.href || attrs["xlink:href"] || ""}
+                onChange={(v) => updateAttribute("href", v)}
+                placeholder="https://…"
+              />
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 flex-1 gap-1.5 text-xs"
+                  onClick={() => imageFileInputRef.current?.click()}
+                >
+                  <IconPhotoFilled className="size-3.5 text-sky-500" />
+                  Replace image…
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs text-muted-foreground"
+                  onClick={() =>
+                    window.open(
+                      attrs.href || attrs["xlink:href"],
+                      "_blank",
+                      "noopener,noreferrer",
+                    )
+                  }
+                  disabled={!attrs.href && !attrs["xlink:href"]}
+                  title="Open image in a new tab"
+                >
+                  <IconLinkFilled className="size-3.5" />
+                  Open
+                </Button>
+                <input
+                  ref={imageFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                      const href = event.target?.result;
+                      if (typeof href !== "string") return;
+                      updateAttribute("href", href);
+                      const probe = new Image();
+                      probe.onload = () => {
+                        const ratio =
+                          probe.width && probe.height
+                            ? probe.width / probe.height
+                            : 1;
+                        const boxW = parseFloat(attrs.width || "100") || 100;
+                        updateAttribute(
+                          "height",
+                          String(Math.max(1, Math.round(boxW / ratio))),
+                        );
+                      };
+                      probe.src = href;
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </div>
+
+              <PropertyMenuSelect
+                label="Fit"
+                value={
+                  (attrs.preserveAspectRatio || "").includes("slice")
+                    ? "cover"
+                    : (attrs.preserveAspectRatio || "").includes("none")
+                      ? "stretch"
+                      : "contain"
+                }
+                options={[
+                  { value: "contain", label: "Contain (keep ratio)" },
+                  { value: "cover", label: "Cover (crop to box)" },
+                  { value: "stretch", label: "Stretch to box" },
+                ]}
+                onChange={(v) =>
+                  updateAttribute(
+                    "preserveAspectRatio",
+                    v === "cover"
+                      ? "xMidYMid slice"
+                      : v === "stretch"
+                        ? "none"
+                        : "xMidYMid meet",
+                  )
+                }
+              />
+
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                Tip: drop an image file onto the canvas, or paste one from the
+                clipboard, to add it as an element.
+              </p>
+            </div>
           </PropertySection>
         )}
 
@@ -1952,23 +3139,66 @@ function PropertiesPanel({
         >
           <div className="space-y-3">
             <PropertySelect
-              label="Compositing"
-              value="Source Over"
-              options={["Source Over", "Multiply", "Screen", "Overlay"]}
-              onChange={() => {}}
-            />
-            <PropertySelect
               label="Order"
-              value="Fill, Stroke, Markers"
+              value={
+                attrs["paint-order"] === "stroke fill markers"
+                  ? "Stroke, Fill, Markers"
+                  : attrs["paint-order"] === "fill markers stroke"
+                    ? "Fill, Markers, Stroke"
+                    : "Fill, Stroke, Markers"
+              }
               options={["Fill, Stroke, Markers", "Stroke, Fill, Markers", "Fill, Markers, Stroke"]}
-              onChange={() => {}}
+              onChange={(v) =>
+                updateAttribute(
+                  "paint-order",
+                  v === "Stroke, Fill, Markers"
+                    ? "stroke fill markers"
+                    : v === "Fill, Markers, Stroke"
+                      ? "fill markers stroke"
+                      : "fill stroke markers",
+                )
+              }
             />
             <div className="flex items-center gap-2">
               <PropertySelect
                 label="Blending"
-                value="Normal"
+                value={(() => {
+                  const mode = /mix-blend-mode\s*:\s*([^;]+)/.exec(attrs.style || "")?.[1]?.trim();
+                  const byMode: Record<string, string> = {
+                    multiply: "Multiply",
+                    screen: "Screen",
+                    overlay: "Overlay",
+                    darken: "Darken",
+                    lighten: "Lighten",
+                    "color-dodge": "Color Dodge",
+                    "color-burn": "Color Burn",
+                  };
+                  return mode ? (byMode[mode] ?? "Normal") : "Normal";
+                })()}
                 options={["Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten", "Color Dodge", "Color Burn"]}
-                onChange={() => {}}
+                onChange={(v) => {
+                  const byLabel: Record<string, string> = {
+                    Multiply: "multiply",
+                    Screen: "screen",
+                    Overlay: "overlay",
+                    Darken: "darken",
+                    Lighten: "lighten",
+                    "Color Dodge": "color-dodge",
+                    "Color Burn": "color-burn",
+                  };
+                  const currentStyle = (attrs.style || "").trim();
+                  const withoutBlend = currentStyle
+                    .replace(/\s*;?\s*mix-blend-mode\s*:\s*[^;]+\s*;?/g, "")
+                    .replace(/^;+|;+$/g, "")
+                    .trim();
+                  const mode = byLabel[v];
+                  updateAttribute(
+                    "style",
+                    mode
+                      ? [withoutBlend, `mix-blend-mode: ${mode}`].filter(Boolean).join("; ")
+                      : withoutBlend,
+                  );
+                }}
               />
               <div className="flex items-center gap-1.5 pt-5">
                 <Checkbox
@@ -2006,20 +3236,185 @@ function PropertiesPanel({
                 label="Fill"
                 value={attrs.fill || "#000000"}
                 onChange={(v) => updateAttribute("fill", v)}
+                documentColors={documentColors}
               />
               <PropertyColorField
                 label="Stroke"
                 value={attrs.stroke || "none"}
                 onChange={(v) => updateAttribute("stroke", v)}
                 allowNone
+                documentColors={documentColors}
               />
             </div>
+            <PropertySelect
+              label="Fill type"
+              value={patternInfo ? "Pattern" : gradientInfo ? (gradientInfo.type === "lineargradient" ? "Linear gradient" : "Radial gradient") : "Solid"}
+              options={["Solid", "Linear gradient", "Radial gradient", "Pattern"]}
+              onChange={(v) => {
+                if (v === "Solid") {
+                  updateGradient("solid", [{ color: gradientInfo?.stops[0]?.color || (attrs.fill && !attrs.fill.startsWith("url(") ? attrs.fill : "#000000") }]);
+                } else if (v === "Linear gradient") {
+                  updateGradient("lineargradient", [{ color: attrs.fill && !attrs.fill.startsWith("url(") ? attrs.fill : "#2391FF" }, { color: "#ffffff" }], gradientInfo?.angle ?? 90);
+                } else if (v === "Radial gradient") {
+                  updateGradient("radialgradient", [{ color: attrs.fill && !attrs.fill.startsWith("url(") ? attrs.fill : "#2391FF" }, { color: "#ffffff" }]);
+                } else {
+                  updatePattern("dots", "#2391FF", "#ffffff", 20);
+                }
+              }}
+            />
+            {patternInfo ? (
+              <div className="space-y-3">
+                <PropertySelect
+                  label="Pattern"
+                  value={patternInfo.type === "dots" ? "Dots" : patternInfo.type === "stripes" ? "Stripes" : patternInfo.type === "checker" ? "Checker" : "Grid"}
+                  options={["Dots", "Stripes", "Checker", "Grid"]}
+                  onChange={(v) => updatePattern(v === "Dots" ? "dots" : v === "Stripes" ? "stripes" : v === "Checker" ? "checker" : "grid", patternInfo.fg, patternInfo.bg, patternInfo.size)}
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <PropertyColorField label="Pattern colour" value={patternInfo.fg} onChange={(v) => updatePattern(patternInfo.type as "dots" | "stripes" | "checker" | "grid", v, patternInfo.bg, patternInfo.size)} />
+                  <PropertyColorField label="Pattern background" value={patternInfo.bg} onChange={(v) => updatePattern(patternInfo.type as "dots" | "stripes" | "checker" | "grid", patternInfo.fg, v, patternInfo.size)} />
+                </div>
+                <PropertySlider label="Pattern size" value={patternInfo.size} onChange={(v) => updatePattern(patternInfo.type as "dots" | "stripes" | "checker" | "grid", patternInfo.fg, patternInfo.bg, v)} min={8} max={80} unit="px" />
+              </div>
+            ) : null}
+            {gradientInfo ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <PropertyColorField
+                    label="Gradient start"
+                    value={gradientInfo.stops[0]?.color || "#2391FF"}
+                    onChange={(v) => updateGradient(gradientInfo.type as "lineargradient" | "radialgradient", [{ color: v }, { color: gradientInfo.stops[1]?.color || "#ffffff" }], gradientInfo.angle)}
+                  />
+                  <PropertyColorField
+                    label="Gradient end"
+                    value={gradientInfo.stops[1]?.color || "#ffffff"}
+                    onChange={(v) => updateGradient(gradientInfo.type as "lineargradient" | "radialgradient", [{ color: gradientInfo.stops[0]?.color || "#2391FF" }, { color: v }], gradientInfo.angle)}
+                  />
+                </div>
+                {gradientInfo.type === "lineargradient" ? (
+                  <PropertySlider
+                    label="Gradient angle"
+                    value={gradientInfo.angle}
+                    onChange={(v) => updateGradient("lineargradient", [{ color: gradientInfo.stops[0]?.color || "#2391FF" }, { color: gradientInfo.stops[1]?.color || "#ffffff" }], v)}
+                    min={0}
+                    max={360}
+                    unit="°"
+                  />
+                ) : null}
+              </div>
+            ) : null}
             <PropertyFieldWithUnit
               label="Stroke Width"
               value={attrs["stroke-width"] || "1"}
               unit="px"
               onChange={(v) => updateAttribute("stroke-width", v)}
             />
+            <div className="grid grid-cols-2 gap-2">
+              <PropertySelect
+                label="Dash"
+                value={
+                  !attrs["stroke-dasharray"] ? "None"
+                    : attrs["stroke-dasharray"] === "6 4" ? "Dashed"
+                    : attrs["stroke-dasharray"] === "0.1 5" ? "Dotted"
+                    : attrs["stroke-dasharray"] === "10 4 2 4" ? "Dash-dot"
+                    : "Custom"
+                }
+                options={["None", "Dashed", "Dotted", "Dash-dot", "Custom"]}
+                onChange={(v) => {
+                  if (v === "None") updateAttribute("stroke-dasharray", "");
+                  else if (v === "Dashed") updateAttribute("stroke-dasharray", "6 4");
+                  else if (v === "Dotted") updateAttribute("stroke-dasharray", "0.1 5");
+                  else if (v === "Dash-dot") updateAttribute("stroke-dasharray", "10 4 2 4");
+                }}
+              />
+              <PropertySelect
+                label="Cap"
+                value={attrs["stroke-linecap"] || "butt"}
+                options={["butt", "round", "square"]}
+                onChange={(v) => updateAttribute("stroke-linecap", v)}
+              />
+              <PropertySelect
+                label="Join"
+                value={attrs["stroke-linejoin"] || "miter"}
+                options={["miter", "round", "bevel"]}
+                onChange={(v) => updateAttribute("stroke-linejoin", v)}
+              />
+              <PropertyField
+                label="Miter limit"
+                value={attrs["stroke-miterlimit"] || "4"}
+                onChange={(v) => updateAttribute("stroke-miterlimit", v)}
+              />
+            </div>
+            {attrs["stroke-dasharray"] && !["6 4", "0.1 5", "10 4 2 4"].includes(attrs["stroke-dasharray"]) ? (
+              <PropertyField
+                label="Custom dash pattern"
+                value={attrs["stroke-dasharray"]}
+                onChange={(v) => updateAttribute("stroke-dasharray", v)}
+                placeholder="e.g. 8 3 2 3"
+              />
+            ) : null}
+            <div className="grid grid-cols-2 gap-2">
+              <PropertySelect
+                label="Start marker"
+                value={attrs["marker-start"] === "url(#marker-arrow-start)" ? "Arrow" : attrs["marker-start"] === "url(#marker-dot-start)" ? "Dot" : "None"}
+                options={["None", "Arrow", "Dot"]}
+                onChange={(v) => updateMarker("start", v === "Arrow" ? "arrow" : v === "Dot" ? "dot" : "none")}
+              />
+              <PropertySelect
+                label="End marker"
+                value={attrs["marker-end"] === "url(#marker-arrow-end)" ? "Arrow" : attrs["marker-end"] === "url(#marker-dot-end)" ? "Dot" : "None"}
+                options={["None", "Arrow", "Dot"]}
+                onChange={(v) => updateMarker("end", v === "Arrow" ? "arrow" : v === "Dot" ? "dot" : "none")}
+              />
+            </div>
+          </div>
+        </PropertySection>
+
+        {/* Filters: blur and drop-shadow, written as real <filter> defs */}
+        <PropertySection
+          title="Filters"
+          icon={<IconAdjustmentsHorizontalFilled className="size-4" />}
+          isExpanded={expanded.has("filters")}
+          onToggle={() => toggleSection("filters")}
+        >
+          <div className="space-y-3">
+            <PropertySelect
+              label="Filter"
+              value={filterInfo ?? "None"}
+              options={["None", "Blur", "Drop shadow"]}
+              onChange={(v) => {
+                if (v === "None") updateFilter("none");
+                else if (v === "Blur") updateFilter("blur", 4);
+                else updateFilter("shadow", 4);
+              }}
+            />
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              Blur and drop shadow are stored as a filter in the file's defs and applied to this element.
+            </p>
+          </div>
+        </PropertySection>
+
+        {/* Generic attributes: edit anything not covered above */}
+        <PropertySection
+          title="Attributes"
+          icon={<IconAdjustmentsHorizontalFilled className="size-4" />}
+          isExpanded={expanded.has("attributes")}
+          onToggle={() => toggleSection("attributes")}
+        >
+          <div className="space-y-2">
+            {Object.keys(attrs)
+              .sort()
+              .map((name) => (
+                <PropertyField
+                  key={name}
+                  label={name}
+                  value={attrs[name] ?? ""}
+                  onChange={(v) => updateAttribute(name, v)}
+                />
+              ))}
+            {Object.keys(attrs).length === 0 ? (
+              <p className="text-xs text-muted-foreground">No attributes.</p>
+            ) : null}
           </div>
         </PropertySection>
 
@@ -2239,7 +3634,7 @@ function AnimateTrackRow({
             }
             className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
           >
-            <IconTrash className="size-3" />
+            <IconTrashFilled className="size-3" />
           </button>
         </div>
       </div>
@@ -2502,7 +3897,7 @@ function FontFamilyMenu({
         <PopoverContent align="start" className="w-64 p-0">
           <div className="border-b border-border p-2">
             <div className="relative">
-              <IconSearch className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <IconSearchFilled className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 autoFocus
                 value={query}
@@ -2539,7 +3934,7 @@ function FontFamilyMenu({
                         {font.name}
                       </span>
                       {active ? (
-                        <IconCheck className="size-3.5 shrink-0" />
+                        <IconCheckFilled className="size-3.5 shrink-0" />
                       ) : null}
                     </button>
                   );
@@ -2643,299 +4038,23 @@ function PropertySlider({
   );
 }
 
-const COLOR_SWATCHES = [
-  "#000000",
-  "#171717",
-  "#404040",
-  "#737373",
-  "#a3a3a3",
-  "#d4d4d4",
-  "#f5f5f5",
-  "#ffffff",
-  "#ef4444",
-  "#f97316",
-  "#f59e0b",
-  "#eab308",
-  "#84cc16",
-  "#22c55e",
-  "#10b981",
-  "#14b8a6",
-  "#06b6d4",
-  "#0ea5e9",
-  "#2391FF",
-  "#3b82f6",
-  "#6366f1",
-  "#8b5cf6",
-  "#d946ef",
-  "#ec4899",
-];
-
-const NONE_SWATCH_STYLE = {
-  backgroundImage:
-    "linear-gradient(135deg, transparent 44%, hsl(var(--muted-foreground)) 44%, hsl(var(--muted-foreground)) 56%, transparent 56%)",
-};
-
-function isLightColor(value: string): boolean {
-  const hex = value.trim().replace("#", "");
-  const rgbPart =
-    hex.length === 3 || hex.length === 4 ? hex.slice(0, 3) : hex.slice(0, 6);
-  const full =
-    rgbPart.length === 3
-      ? rgbPart
-          .split("")
-          .map((char) => char + char)
-          .join("")
-      : rgbPart;
-  if (full.length !== 6) return false;
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  if ([r, g, b].some(Number.isNaN)) return false;
-  return (r * 299 + g * 587 + b * 114) / 1000 > 160;
-}
-
-function normalizeHex(value: string): string | null {
-  const match = /^#?([0-9a-f]{3,8})$/i.exec(value.trim());
-  if (!match) return null;
-  let hex = (match[1] ?? "").toLowerCase();
-  if (hex.length === 3 || hex.length === 4) {
-    hex = hex
-      .split("")
-      .map((char) => char + char)
-      .join("");
-  }
-  if (hex.length === 6) hex += "ff";
-  if (hex.length !== 8) return null;
-  return `#${hex}`;
-}
-
-function rgbToHex(r: number, g: number, b: number, a = 1): string {
-  const channel = (n: number) =>
-    Math.max(0, Math.min(255, Math.round(n)))
-      .toString(16)
-      .padStart(2, "0");
-  const base = `#${channel(r)}${channel(g)}${channel(b)}`;
-  return a >= 0.999 ? base : `${base}${channel(a * 255)}`;
-}
-
-function stripOpaqueHex(value: string): string {
-  return value.length === 9 && value.slice(7).toLowerCase() === "ff"
-    ? value.slice(0, 7)
-    : value;
-}
-
-let colorCanvasContext: CanvasRenderingContext2D | null | undefined;
-function cssColorToHex(value: string): string | null {
-  const direct = normalizeHex(value);
-  if (direct) return direct;
-  if (typeof document === "undefined") return null;
-  if (colorCanvasContext === undefined) {
-    colorCanvasContext = document.createElement("canvas").getContext("2d");
-  }
-  if (!colorCanvasContext) return null;
-
-  // Let the browser resolve named colors, rgb()/hsl(), currentColor, etc.
-  const sentinel = "#fe01fe";
-  colorCanvasContext.fillStyle = sentinel;
-  colorCanvasContext.fillStyle = value;
-  const resolved = colorCanvasContext.fillStyle;
-  if (resolved.toLowerCase() === sentinel) return null;
-
-  const resolvedHex = normalizeHex(resolved);
-  if (resolvedHex) return resolvedHex;
-
-  const rgba = /^rgba?\(([^)]+)\)$/i.exec(resolved);
-  if (rgba) {
-    const parts = (rgba[1] ?? "")
-      .split(/[\s,/]+/)
-      .filter(Boolean)
-      .map((part) => Number.parseFloat(part));
-    if (parts.length >= 3 && parts.slice(0, 3).every((n) => !Number.isNaN(n))) {
-      return rgbToHex(parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0, parts[3] ?? 1);
-    }
-  }
-  return null;
-}
-
-function ColorPicker({
-  value,
-  onChange,
-  allowNone = false,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  allowNone?: boolean;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [open, setOpen] = useState(false);
-  const isNone = value.trim().toLowerCase() === "none" || value.trim() === "";
-  const pickerColor = useMemo(() => cssColorToHex(value) ?? "#000000", [value]);
-
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-
-  const commit = (next: string) => {
-    const clean = stripOpaqueHex(next);
-    setDraft(clean);
-    onChange(clean);
-  };
-
-  const commitDraft = (next: string, final = false) => {
-    setDraft(next);
-    const trimmed = next.trim();
-    if (!trimmed) {
-      if (final) setDraft(value);
-      return;
-    }
-    if (trimmed.toLowerCase() === "none") {
-      onChange("none");
-      return;
-    }
-    if (cssColorToHex(trimmed)) {
-      onChange(trimmed);
-      return;
-    }
-    // Allow arbitrary CSS paints such as url(#gradient) or currentColor when
-    // the field is committed, while not thrashing the SVG on every keystroke.
-    if (final && !/^#?[0-9a-f]*$/i.test(trimmed)) {
-      onChange(trimmed);
-      return;
-    }
-    if (final) setDraft(value);
-  };
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 w-full justify-start px-2 text-left text-xs font-normal dark:bg-background"
-        >
-          <span className="motion-checkerboard size-4 shrink-0 overflow-hidden rounded-[3px] border border-border">
-            <span
-              className="block size-full"
-              style={isNone ? NONE_SWATCH_STYLE : { backgroundColor: value }}
-            />
-          </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">
-            {isNone ? "None" : value}
-          </span>
-          <IconChevronDown className="size-3 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={6} className="w-[268px] p-3">
-        <div className="space-y-3">
-          <div className="motion-color-picker">
-            <HexAlphaColorPicker color={pickerColor} onChange={commit} />
-          </div>
-
-          <div className="flex items-end gap-2">
-            <span className="motion-checkerboard size-8 shrink-0 overflow-hidden rounded-md border border-border">
-              <span
-                className="block size-full"
-                style={isNone ? NONE_SWATCH_STYLE : { backgroundColor: value }}
-              />
-            </span>
-            <label className="min-w-0 flex-1 space-y-1">
-              <span className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Hex
-              </span>
-              <Input
-                value={draft}
-                onChange={(event) => commitDraft(event.target.value)}
-                onBlur={() => commitDraft(draft, true)}
-                onFocus={(event) => event.currentTarget.select()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    commitDraft(draft, true);
-                    setOpen(false);
-                  }
-                }}
-                className="h-7 font-mono text-[11px]"
-                placeholder="#000000"
-                spellCheck={false}
-              />
-            </label>
-          </div>
-
-          <div className="space-y-1.5">
-            <span className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              Presets
-            </span>
-            <div className="grid grid-cols-8 gap-1.5">
-              {COLOR_SWATCHES.map((color) => {
-                const active =
-                  value.trim().toLowerCase() === color.toLowerCase();
-                return (
-                  <button
-                    key={color}
-                    type="button"
-                    onClick={() => commit(color)}
-                    className={`grid size-6 place-items-center rounded-[5px] border transition-transform hover:scale-110 ${
-                      active
-                        ? "border-[#2391FF] ring-2 ring-[#2391FF]/30"
-                        : "border-black/10"
-                    }`}
-                    style={{ backgroundColor: color }}
-                    aria-label={`Use ${color}`}
-                  >
-                    {active ? (
-                      <IconCheck
-                        className={`size-3 ${
-                          isLightColor(color) ? "text-black" : "text-white"
-                        }`}
-                      />
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {allowNone ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => commit("none")}
-              className={`w-full justify-start text-[11px] ${
-                isNone
-                  ? "border-[#2391FF] text-[#2391FF] hover:text-[#2391FF]"
-                  : "text-muted-foreground"
-              }`}
-            >
-              <span
-                className="size-3 rounded-[2px] border border-border"
-                style={NONE_SWATCH_STYLE}
-              />
-              No color
-            </Button>
-          ) : null}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 function PropertyColorField({
   label,
   value,
   onChange,
   allowNone = false,
+  documentColors,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   allowNone?: boolean;
+  documentColors?: string[];
 }) {
   return (
     <div className="space-y-1.5">
       <label className="text-xs font-medium text-muted-foreground">{label}</label>
-      <ColorPicker value={value} onChange={onChange} allowNone={allowNone} />
+      <ColorPicker value={value} onChange={onChange} allowNone={allowNone} documentColors={documentColors} />
     </div>
   );
 }
@@ -2959,11 +4078,14 @@ function LeftSidebarWithTabs({
   onUnlockAll,
   onAddElement,
   onAddImage,
+  onImportSvg,
   onTitleChange,
   onSave,
   onPreviewSvg,
   onUndo,
   onRedo,
+  canUndo = true,
+  canRedo = true,
 }: {
   animation: MotionAnimation | null;
   title?: string;
@@ -2981,13 +4103,16 @@ function LeftSidebarWithTabs({
   onEditAttributes: (node: TreeNode) => void;
   onUnhideAll: () => void;
   onUnlockAll: () => void;
-  onAddElement: (type: "rect" | "circle" | "text" | "g") => void;
+  onAddElement: (type: AddableElement) => void;
   onAddImage: (data: File | string) => void;
+  onImportSvg?: (svgText: string) => void;
   onTitleChange?: (next: string) => void;
   onSave: (next: MotionAnimation) => Promise<void>;
   onPreviewSvg?: (svg: string) => void;
   onUndo?: () => void;
   onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<"elements" | "properties">("elements");
   const treeSelectionRef = useRef<string | null>(null);
@@ -3025,17 +4150,21 @@ function LeftSidebarWithTabs({
         </div>
         <button
           onClick={onUndo}
-          className="grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-          title="Undo"
+          disabled={!canUndo}
+          className="relative group grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-35"
+          aria-label={canUndo ? "Undo" : "Nothing to undo"}
         >
-          <IconArrowBackUp className="size-4" />
+          <IconArrowBackUp className="size-[18px]" strokeWidth={2.5} />
+          <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Undo</span>
         </button>
         <button
           onClick={onRedo}
-          className="grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-          title="Redo"
+          disabled={!canRedo}
+          className="relative group grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-35"
+          aria-label={canRedo ? "Redo" : "Nothing to redo"}
         >
-          <IconArrowForwardUp className="size-4" />
+          <IconArrowForwardUp className="size-[18px]" strokeWidth={2.5} />
+          <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Redo</span>
         </button>
       </div>
 
@@ -3095,10 +4224,13 @@ function LeftSidebarWithTabs({
             onUnlockAll={onUnlockAll}
             onAddElement={onAddElement}
             onAddImage={onAddImage}
+            {...(onImportSvg ? { onImportSvg } : {})}
             onSave={onSave}
             {...(onTitleChange && { onTitleChange })}
             {...(onUndo && { onUndo })}
             {...(onRedo && { onRedo })}
+            canUndo={canUndo}
+            canRedo={canRedo}
             hideHeader={true}
           />
         ) : (
@@ -3134,9 +4266,12 @@ function ElementsRail({
   onUnlockAll,
   onAddElement,
   onAddImage,
+  onImportSvg,
   onTitleChange,
   onUndo,
   onRedo,
+  canUndo = true,
+  canRedo = true,
   onSave,
   hideHeader,
 }: {
@@ -3156,17 +4291,38 @@ function ElementsRail({
   onEditAttributes: (node: TreeNode) => void;
   onUnhideAll: () => void;
   onUnlockAll: () => void;
-  onAddElement: (type: "rect" | "circle" | "text" | "g") => void;
+  onAddElement: (type: AddableElement) => void;
   onAddImage: (data: File | string) => void;
+  onImportSvg?: (svgText: string) => void;
   onTitleChange?: (next: string) => void;
   onUndo?: () => void;
   onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
   onSave: (next: MotionAnimation) => Promise<void>;
   hideHeader?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const svgFileInputRef = useRef<HTMLInputElement>(null);
   const { prompt, dialog: promptDialog } = usePromptDialog();
   const tree = useMemo(() => (animation ? parseElementTree(animation.svg) : null), [animation?.svg]);
+
+  // Read-only list of defs (gradients, patterns, filters, markers, masks,
+  // clips) for the Definitions section below the tree. These rows are
+  // deliberately NOT selectable: defs are invisible, and selecting them
+  // would break canvas selection and measurement, which was the reason
+  // they were hidden from the tree in the first place.
+  const defsList = useMemo(() => {
+    if (!animation?.svg) return [] as Array<{ id: string; tag: string }>;
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const defs = doc.documentElement.querySelector("defs");
+      if (!defs) return [];
+      return Array.from(defs.children).map((el) => ({ id: el.getAttribute("id") || `<${el.tagName.toLowerCase()}>`, tag: el.tagName.toLowerCase() }));
+    } catch {
+      return [];
+    }
+  }, [animation?.svg]);
 
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -3188,12 +4344,14 @@ function ElementsRail({
 
   const handleSelectNode = useCallback(
     (id: string | null, additive: boolean) => {
+      console.log('handleSelectNode called:', { id, additive, selectedIds });
       if (!id) {
         setSelectedIds([]);
         onSelectElement(null);
         return;
       }
       if (!additive) {
+        console.log('Setting single selection:', id);
         setSelectedIds([id]);
         onSelectElement(id);
         return;
@@ -3201,6 +4359,7 @@ function ElementsRail({
       const next = selectedIds.includes(id)
         ? selectedIds.filter((value) => value !== id)
         : [...selectedIds, id];
+      console.log('Multi-select, new selection:', next);
       setSelectedIds(next);
       onSelectElement(
         next.includes(id) ? id : (next[next.length - 1] ?? null),
@@ -3209,12 +4368,31 @@ function ElementsRail({
     [onSelectElement, selectedIds],
   );
 
-  const toggleCollapse = (key: string) => {
+  const toggleCollapse = useCallback((key: string) => {
     setCollapsedIds((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
+    });
+  }, []);
+
+  /**
+   * "Ask AI" on an element tags it in the agent composer. The context chip
+   * carries the element's markup and its existing tracks, so the user only has
+   * to type what they want changed. Selecting the element first also points the
+   * agent's screen context at the same shape.
+   */
+  const handleAskAi = (node: TreeNode) => {
+    if (!animation) return;
+    if (node.id) handleSelectNode(node.id, false);
+    askAgentAboutElement({
+      element: { tag: node.tag, id: node.id, path: node.path },
+      label: getElementLabel(node),
+      projectId: animation.id,
+      projectTitle: title || animation.title,
+      svg: animation.svg,
+      tracks: animation.tracks,
     });
   };
 
@@ -3261,6 +4439,24 @@ function ElementsRail({
   const animatedTargets = useMemo(() => {
     return new Set((animation?.tracks || []).map((t) => t.target));
   }, [animation?.tracks]);
+
+  // Image elements get a real thumbnail in the tree when their source resolves.
+  const imageSources = useMemo(() => {
+    const sources = new Map<string, string>();
+    if (!animation?.svg) return sources;
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      doc.querySelectorAll("image").forEach((el) => {
+        const id = el.getAttribute("id");
+        const href =
+          el.getAttribute("href") || el.getAttribute("xlink:href") || "";
+        if (id && href) sources.set(id, href);
+      });
+    } catch {
+      // Malformed SVG: fall back to the generic photo icon.
+    }
+    return sources;
+  }, [animation?.svg]);
 
   // Groups that an element can be moved into.
   const groupTargets = useMemo<MoveTarget[]>(() => {
@@ -3309,6 +4505,59 @@ function ElementsRail({
       onSelectElement(selectId);
     },
     [animation, onSave, onSelectElement],
+  );
+
+  // Guard against double-taps assigning two different ids to the same row
+  // before the first save has re-rendered the tree.
+  const assigningIdsRef = useRef(new Set<string>());
+
+  /**
+   * Tap-to-select for any Elements row, without touching the canvas element.
+   *
+   * Selection everywhere else in the studio is id-based, so an element with
+   * no id cannot be selected as-is. Tapping it assigns it a stable id
+   * (same `${tag}-xxxx` pattern as newly added elements), saves the SVG,
+   * and then selects that id — which draws the canvas selection frame and
+   * keeps the Elements panel open. The artboard root (path "") is not an
+   * editable element, so tapping it does nothing.
+   */
+  const handleSelectTreeNode = useCallback(
+    (node: TreeNode, additive: boolean) => {
+      if (node.id) {
+        handleSelectNode(node.id, additive);
+        return;
+      }
+      if (!node.path || !animation) return;
+      if (assigningIdsRef.current.has(node.path)) return;
+      assigningIdsRef.current.add(node.path);
+      void (async () => {
+        try {
+          const doc = new DOMParser().parseFromString(
+            animation.svg,
+            "image/svg+xml",
+          );
+          const element = getElementByPath(doc, node.path);
+          if (!element || element === doc.documentElement) return;
+          const base = node.tag.toLowerCase() || "element";
+          let newId = `${base}-${Math.random().toString(36).slice(2, 6)}`;
+          while (doc.getElementById(newId)) {
+            newId = `${base}-${Math.random().toString(36).slice(2, 6)}`;
+          }
+          element.setAttribute("id", newId);
+          if (additive) {
+            setSelectedIds((prev) =>
+              prev.includes(newId) ? prev : [...prev, newId],
+            );
+          } else {
+            setSelectedIds([newId]);
+          }
+          await writeSvg(doc, newId);
+        } finally {
+          assigningIdsRef.current.delete(node.path);
+        }
+      })();
+    },
+    [animation, handleSelectNode, writeSvg],
   );
 
   const handleGroupElements = useCallback(
@@ -3392,6 +4641,326 @@ function ElementsRail({
     [animation, writeSvg],
   );
 
+  // Convert to component: keep the selected element as the master (still
+  // editable in the tree) and create a <use> instance referencing it, so
+  // editing the master updates every instance. Duplicate the instance
+  // (Cmd/Ctrl+D on canvas) to place more copies, then drag each one away.
+  const handleConvertToComponent = useCallback(
+    async (node: TreeNode) => {
+      if (!animation || !node.path || !node.id) {
+        toast.error("Tap the row first to give this element an id, then convert it.");
+        return;
+      }
+      if (node.tag.toLowerCase() === "use") {
+        toast.error("That element is already an instance.");
+        return;
+      }
+      if (animation.tracks.some((track) => track.target === node.id)) {
+        toast.error("Remove this element's animation tracks before converting it.");
+        return;
+      }
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const element = getElementByPath(doc, node.path);
+      if (!element || element === doc.documentElement) return;
+      const parent = element.parentElement;
+      if (!parent) return;
+      const useEl = doc.createElementNS(SVG_NS, "use");
+      let useId = `use-${Math.random().toString(36).slice(2, 6)}`;
+      while (doc.getElementById(useId)) useId = `use-${Math.random().toString(36).slice(2, 6)}`;
+      useEl.setAttribute("id", useId);
+      useEl.setAttribute("href", `#${node.id}`);
+      parent.insertBefore(useEl, element.nextSibling);
+      await writeSvg(doc, useId);
+      toast.success("Component created — the instance is selected, drag it away from the master");
+    },
+    [animation, writeSvg],
+  );
+
+  // Mask / clip: the first selected element is the shape, the rest are
+  // targets. The shape's geometry is cloned into a <mask> (filled white,
+  // so it reveals) or <clipPath> in defs, targets get mask/clip-path, and
+  // the original shape is hidden so it doesn't draw on top of the result.
+  const handleMaskOrClip = useCallback(
+    async (kind: "mask" | "clip") => {
+      if (!animation || selectedIds.length < 2) {
+        toast.error("Select a shape first, then the elements to mask or clip (Cmd/Ctrl-click to multi-select)." );
+        return;
+      }
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const shapeEl = doc.getElementById(selectedIds[0]!);
+      if (!shapeEl) return;
+      const targets = selectedIds.slice(1).map((id) => doc.getElementById(id)).filter((el): el is Element => Boolean(el));
+      if (targets.length === 0) return;
+      let defs = doc.documentElement.querySelector("defs");
+      if (!defs) {
+        defs = doc.createElementNS(SVG_NS, "defs");
+        doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+      }
+      const defId = `${kind}-${Math.random().toString(36).slice(2, 6)}`;
+      const defEl = doc.createElementNS(SVG_NS, kind === "mask" ? "mask" : "clipPath");
+      defEl.setAttribute("id", defId);
+      if (kind === "mask") {
+        defEl.setAttribute("maskUnits", "userSpaceOnUse");
+        defEl.setAttribute("x", "0");
+        defEl.setAttribute("y", "0");
+        defEl.setAttribute("width", "100%");
+        defEl.setAttribute("height", "100%");
+      }
+      const clone = shapeEl.cloneNode(true) as Element;
+      clone.removeAttribute("id");
+      if (kind === "mask") {
+        clone.setAttribute("fill", "#ffffff");
+        clone.setAttribute("stroke", "none");
+      }
+      defEl.appendChild(clone);
+      defs.appendChild(defEl);
+      targets.forEach((t) => t.setAttribute(kind === "mask" ? "mask" : "clip-path", `url(#${defId})`));
+      await writeSvg(doc, selectedIds[1]!);
+      // Hide the original shape via the sidebar's hide toggle, using its tree node.
+      // Note: selectedNodes is declared below this callback, so it must NOT
+      // appear in this callback's dependency array — evaluating the deps
+      // during render would crash with a TDZ error (same class of bug as
+      // the earlier multiSelection crash). Walk the tree instead, which is
+      // declared above.
+      let shapeNode: TreeNode | undefined;
+      const walk = (node: TreeNode) => {
+        if (node.id === selectedIds[0]) { shapeNode = node; return; }
+        node.children.forEach(walk);
+      };
+      if (tree) walk(tree);
+      if (shapeNode && !hiddenIds.has(selectedIds[0]!)) onToggleHide(shapeNode);
+      toast.success(kind === "mask" ? "Mask applied" : "Clip applied");
+    },
+    [animation, selectedIds, tree, writeSvg, onToggleHide, hiddenIds],
+  );
+
+  const handleClearMaskClip = useCallback(async () => {
+    if (!animation || selectedIds.length === 0) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    selectedIds.forEach((id) => {
+      const el = doc.getElementById(id);
+      if (el) { el.removeAttribute("mask"); el.removeAttribute("clip-path"); }
+    });
+    await writeSvg(doc, selectedIds[0]!);
+    toast.success("Mask / clip cleared");
+  }, [animation, selectedIds, writeSvg]);
+
+  // Convert a basic shape to an equivalent <path>, keeping its id, fill,
+  // stroke and other attributes, so the Node tool can reshape it.
+  const handleConvertToPath = useCallback(async (node: TreeNode) => {
+    if (!animation || !node.path || !node.id) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const el = getElementByPath(doc, node.path);
+    if (!el) return;
+    const tag = el.nodeName.toLowerCase();
+    const num = (attr: string, fallback = 0) => parseFloat(el.getAttribute(attr) || "") || fallback;
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+    let d = "";
+    if (tag === "rect") {
+      const x = num("x"), y = num("y"), w = num("width"), h = num("height");
+      const rx = Math.min(num("rx", Math.min(num("rx"), w / 2)), h / 2);
+      const ry = num("ry") ? Math.min(num("ry"), h / 2) : rx;
+      if (rx > 0 || ry > 0) {
+        d = `M ${round2(x + rx)} ${round2(y)} H ${round2(x + w - rx)} A ${round2(rx)} ${round2(ry)} 0 0 1 ${round2(x + w)} ${round2(y + ry)} V ${round2(y + h - ry)} A ${round2(rx)} ${round2(ry)} 0 0 1 ${round2(x + w - rx)} ${round2(y + h)} H ${round2(x + rx)} A ${round2(rx)} ${round2(ry)} 0 0 1 ${round2(x)} ${round2(y + h - ry)} V ${round2(y + ry)} A ${round2(rx)} ${round2(ry)} 0 0 1 ${round2(x + rx)} ${round2(y)} Z`;
+      } else {
+        d = `M ${round2(x)} ${round2(y)} H ${round2(x + w)} V ${round2(y + h)} H ${round2(x)} Z`;
+      }
+    } else if (tag === "circle") {
+      const cx = num("cx"), cy = num("cy"), r = num("r");
+      d = `M ${round2(cx - r)} ${round2(cy)} A ${round2(r)} ${round2(r)} 0 1 0 ${round2(cx + r)} ${round2(cy)} A ${round2(r)} ${round2(r)} 0 1 0 ${round2(cx - r)} ${round2(cy)} Z`;
+    } else if (tag === "ellipse") {
+      const cx = num("cx"), cy = num("cy"), rx = num("rx"), ry = num("ry");
+      d = `M ${round2(cx - rx)} ${round2(cy)} A ${round2(rx)} ${round2(ry)} 0 1 0 ${round2(cx + rx)} ${round2(cy)} A ${round2(rx)} ${round2(ry)} 0 1 0 ${round2(cx - rx)} ${round2(cy)} Z`;
+    } else if (tag === "polygon" || tag === "polyline") {
+      const pts = (el.getAttribute("points") || "").trim().split(/[\s,]+/).map(Number).filter((n) => Number.isFinite(n));
+      if (pts.length < 4) { toast.error("That shape has too few points to convert."); return; }
+      d = `M ${round2(pts[0]!)} ${round2(pts[1]!)}`;
+      for (let i = 2; i + 1 < pts.length; i += 2) d += ` L ${round2(pts[i]!)} ${round2(pts[i + 1]!)}`;
+      if (tag === "polygon") d += " Z";
+    } else if (tag === "line") {
+      d = `M ${round2(num("x1"))} ${round2(num("y1"))} L ${round2(num("x2"))} ${round2(num("y2"))}`;
+    } else {
+      toast.error(`Cannot convert <${tag}> to a path — text and images have no outline to convert.`);
+      return;
+    }
+    const path = doc.createElementNS(SVG_NS, "path");
+    Array.from(el.attributes).forEach((attr) => {
+      if (["x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "points", "x1", "y1", "x2", "y2"].includes(attr.name)) return;
+      path.setAttribute(attr.name, attr.value);
+    });
+    path.setAttribute("d", d);
+    el.parentElement?.replaceChild(path, el);
+    await writeSvg(doc, node.id);
+    toast.success("Converted to path");
+  }, [animation, writeSvg]);
+
+  // Simplify a straight-line path: drop points that lie on the line
+  // between their neighbours (within 0.5 user units). Curved paths are
+  // left alone, because flattening them would change the shape.
+  const handleSimplifyPath = useCallback(async (node: TreeNode) => {
+    if (!animation || !node.path) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const el = getElementByPath(doc, node.path);
+    if (!el || el.nodeName.toLowerCase() !== "path") return;
+    const d = el.getAttribute("d") || "";
+    // Any curve/arc command (C, Q, S, T, A) means the path is not
+    // straight-line only; flattening it would change the shape.
+    if (/[CQSTA]/i.test(d.replace(/\d/g, ""))) { toast.error("Simplify only works on straight-line paths for now."); return; }
+    const tokens = d.match(/[MLHVZ]|-?\d*\.?\d+/gi) || [];
+    const pts: Array<{ x: number; y: number }> = [];
+    let closed = false;
+    let i = 0;
+    let cx = 0, cy = 0;
+    while (i < tokens.length) {
+      const tok = tokens[i++]!;
+      if (tok === "M" || tok === "L") { cx = Number(tokens[i++]!); cy = Number(tokens[i++]!); pts.push({ x: cx, y: cy }); }
+      else if (tok === "H") { cx = Number(tokens[i++]!); pts.push({ x: cx, y: cy }); }
+      else if (tok === "V") { cy = Number(tokens[i++]!); pts.push({ x: cx, y: cy }); }
+      else if (tok === "Z") { closed = true; }
+      else { i++; }
+    }
+    if (pts.length < 3) { toast.error("Nothing to simplify in that path."); return; }
+    const distToLine = (p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) => {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+      return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
+    };
+    const kept = pts.filter((p, idx) => idx === 0 || idx === pts.length - 1 || distToLine(p, pts[idx - 1]!, pts[idx + 1]!) > 0.5);
+    if (kept.length === pts.length) { toast.error("That path is already simplified."); return; }
+    const nextD = `M ${kept[0]!.x} ${kept[0]!.y}` + kept.slice(1).map((p) => ` L ${p.x} ${p.y}`).join("") + (closed ? " Z" : "");
+    el.setAttribute("d", nextD);
+    await writeSvg(doc, node.id || null);
+    toast.success(`Simplified ${pts.length} points to ${kept.length}`);
+  }, [animation, writeSvg]);
+
+  // Boolean path operations, via polygon-clipping. Curves are flattened
+  // by sampling the path with getPointAtLength (the browser's own path
+  // geometry), so the result is an approximation whose fidelity depends
+  // on the sampling step — fine for filled shapes, not for hairline detail.
+  // Both inputs must be closed paths; the second element is consumed.
+  const handleBooleanOp = useCallback(async (op: "union" | "subtract" | "intersect") => {
+    if (!animation || selectedIds.length < 2) { toast.error("Select two closed paths, first = base, second = operand."); return; }
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const baseEl = doc.getElementById(selectedIds[0]!);
+    const otherEl = doc.getElementById(selectedIds[1]!);
+    if (!baseEl || !otherEl || baseEl.nodeName.toLowerCase() !== "path" || otherEl.nodeName.toLowerCase() !== "path") { toast.error("Boolean operations need two <path> elements — convert shapes to paths first."); return; }
+    const flatten = (d: string): Array<Array<[number, number]>> | null => {
+      if (!/Z/i.test(d)) return null;
+      const probe = document.createElementNS(SVG_NS, "path");
+      probe.setAttribute("d", d);
+      let total = 0;
+      try { total = probe.getTotalLength(); } catch { return null; }
+      if (!total) return null;
+      const step = Math.max(2, total / 512);
+      const pts: Array<[number, number]> = [];
+      for (let len = 0; len < total; len += step) { const p = probe.getPointAtLength(len); pts.push([Math.round(p.x * 100) / 100, Math.round(p.y * 100) / 100]); }
+      const end = probe.getPointAtLength(total);
+      pts.push([Math.round(end.x * 100) / 100, Math.round(end.y * 100) / 100]);
+      return [pts];
+    };
+    const basePoly = flatten(baseEl.getAttribute("d") || "");
+    const otherPoly = flatten(otherEl.getAttribute("d") || "");
+    if (!basePoly || !otherPoly) { toast.error("Both paths must be closed (end with Z)."); return; }
+    let result: number[][][];
+    try {
+      const clipping = await import("polygon-clipping").catch(() => null);
+      if (!clipping) { toast.error("polygon-clipping is not installed — run pnpm install, then restart the dev server."); return; }
+      result = op === "union" ? clipping.union(basePoly, otherPoly) : op === "subtract" ? clipping.difference(basePoly, otherPoly) : clipping.intersection(basePoly, otherPoly);
+    } catch { toast.error("That boolean operation failed on these shapes."); return; }
+    if (!result || result.length === 0) { toast.error("That operation produced an empty shape — nothing changed."); return; }
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+    const d = result.map((polygon) => polygon.map((ring) => {
+      if (ring.length === 0) return "";
+      return `M ${round2(ring[0]![0])} ${round2(ring[0]![1])}` + ring.slice(1).map((pt) => ` L ${round2(pt[0])} ${round2(pt[1])}`).join("") + " Z";
+    }).filter(Boolean).join(" "));
+    baseEl.setAttribute("d", d);
+    baseEl.setAttribute("fill-rule", "evenodd");
+    otherEl.remove();
+    await writeSvg(doc, selectedIds[0]!);
+    toast.success(op === "union" ? "Union applied" : op === "subtract" ? "Subtract applied" : "Intersect applied");
+  }, [animation, selectedIds, writeSvg]);
+
+  // PNG tracing (silhouette only): load an image, threshold its alpha
+  // channel, and follow the outer boundary of the first solid region
+  // with Moore boundary tracing. Multi-colour artwork and interior
+  // holes are NOT traced — the result is the outer silhouette as one
+  // path, simplified to keep the point count manageable.
+  const tracePngInputRef = useRef<HTMLInputElement>(null);
+  const handleTracePngFile = useCallback(async (file: File) => {
+    if (!animation) return;
+    try {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error("load")); img.src = url; });
+      URL.revokeObjectURL(url);
+      const maxDim = 256;
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      const on = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && data[(y * w + x) * 4 + 3]! > 128;
+      let startX = -1, startY = -1;
+      outer: for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) { if (on(x, y)) { startX = x; startY = y; break outer; } } }
+      if (startX < 0) { toast.error("No solid pixels found in that image."); return; }
+      // Moore boundary tracing, 8 neighbours, clockwise from the backtrack direction.
+      const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]] as const;
+      const pts: Array<[number, number]> = [[startX, startY]];
+      let cx = startX, cy = startY, backDir = 4; // came from the west
+      for (let step = 0; step < w * h * 4; step++) {
+        let moved = false;
+        for (let k = 0; k < 8; k++) {
+          const dirIdx = (backDir + 1 + k) % 8;
+          const nx = cx + dirs[dirIdx]![0], ny = cy + dirs[dirIdx]![1];
+          if (on(nx, ny)) {
+            cx = nx; cy = ny; backDir = (dirIdx + 4) % 8;
+            if (cx === startX && cy === startY) { moved = false; break; }
+            pts.push([cx, cy]); moved = true; break;
+          }
+        }
+        if (!moved) break;
+        if (cx === startX && cy === startY) break;
+      }
+      if (pts.length < 4) { toast.error("Could not trace a boundary in that image."); return; }
+      // Simplify: drop points within 1.5px of the line between neighbours.
+      const kept: Array<[number, number]> = [];
+      for (let i = 0; i < pts.length; i++) {
+        const prev = pts[(i - 1 + pts.length) % pts.length]!;
+        const cur = pts[i]!;
+        const next = pts[(i + 1) % pts.length]!;
+        const dx = next[0] - prev[0], dy = next[1] - prev[1];
+        const len = Math.hypot(dx, dy) || 1;
+        const dist = Math.abs((cur[0] - prev[0]) * dy - (cur[1] - prev[1]) * dx) / len;
+        if (dist > 1.5 || kept.length === 0) kept.push(cur);
+      }
+      // Fit the traced silhouette into the artboard, centred, scaled down only.
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const root = doc.documentElement;
+      const vb = (root.getAttribute("viewBox") || "0 0 200 200").split(/[\s,]+/).map(Number);
+      const vbW = vb[2] || 200, vbH = vb[3] || 200, vbX = vb[0] || 0, vbY = vb[1] || 0;
+      const fit = Math.min(1, vbW / w, vbH / h);
+      const ox = vbX + (vbW - w * fit) / 2, oy = vbY + (vbH - h * fit) / 2;
+      const round2 = (v: number) => Math.round(v * 100) / 100;
+      const d = kept.map((pt, i) => `${i === 0 ? "M" : "L"} ${round2(ox + pt[0] * fit)} ${round2(oy + pt[1] * fit)}`).join(" ") + " Z";
+      const path = doc.createElementNS(SVG_NS, "path");
+      let id = `trace-${Math.random().toString(36).slice(2, 6)}`;
+      while (doc.getElementById(id)) id = `trace-${Math.random().toString(36).slice(2, 6)}`;
+      path.setAttribute("id", id);
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "#000000");
+      root.appendChild(path);
+      await writeSvg(doc, id);
+      toast.success(`Traced silhouette (${kept.length} points)`);
+    } catch {
+      toast.error("Could not trace that image.");
+    }
+  }, [animation, writeSvg]);
+
   const handleMoveElement = useCallback(
     async (node: TreeNode, targetPath: string | null) => {
       if (!animation || !node.path) return;
@@ -3418,6 +4987,105 @@ function ElementsRail({
       if (element.contains(target)) return;
 
       target.appendChild(element);
+      await writeSvg(doc, node.id || null);
+    },
+    [animation, writeSvg],
+  );
+
+  const handleBringToFront = useCallback(
+    async (node: TreeNode) => {
+      if (!animation || !node.path) return;
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const element = getElementByPath(doc, node.path);
+      if (!element || element === doc.documentElement) return;
+      
+      const parent = element.parentElement;
+      if (!parent) return;
+      
+      // Move to last position in parent
+      parent.appendChild(element);
+      await writeSvg(doc, node.id || null);
+      toast.success("Brought to front");
+    },
+    [animation, writeSvg],
+  );
+
+  const handleSendToBack = useCallback(
+    async (node: TreeNode) => {
+      if (!animation || !node.path) return;
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const element = getElementByPath(doc, node.path);
+      if (!element || element === doc.documentElement) return;
+      
+      const parent = element.parentElement;
+      if (!parent) return;
+      
+      // Move to first position in parent (after any <defs>, <style>, etc.)
+      const firstPaintChild = Array.from(parent.children).find((child) => 
+        !IGNORED_TAGS.has(child.nodeName.toLowerCase()) && 
+        child.nodeName.toLowerCase() !== "defs"
+      );
+      
+      if (firstPaintChild) {
+        parent.insertBefore(element, firstPaintChild);
+      } else {
+        parent.prepend(element);
+      }
+      await writeSvg(doc, node.id || null);
+      toast.success("Sent to back");
+    },
+    [animation, writeSvg],
+  );
+
+  const handleBringForward = useCallback(
+    async (node: TreeNode) => {
+      if (!animation || !node.path) return;
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const element = getElementByPath(doc, node.path);
+      if (!element || element === doc.documentElement) return;
+      
+      const parent = element.parentElement;
+      if (!parent) return;
+      
+      const siblings = getTreeChildren(parent);
+      const currentIndex = siblings.indexOf(element);
+      
+      if (currentIndex === -1 || currentIndex === siblings.length - 1) return; // Already at top
+      
+      // Swap with next sibling
+      const nextSibling = siblings[currentIndex + 1];
+      if (nextSibling && nextSibling.nextSibling) {
+        parent.insertBefore(element, nextSibling.nextSibling);
+      } else if (nextSibling) {
+        parent.appendChild(element);
+      }
+      
+      await writeSvg(doc, node.id || null);
+    },
+    [animation, writeSvg],
+  );
+
+  const handleSendBackward = useCallback(
+    async (node: TreeNode) => {
+      if (!animation || !node.path) return;
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const element = getElementByPath(doc, node.path);
+      if (!element || element === doc.documentElement) return;
+      
+      const parent = element.parentElement;
+      if (!parent) return;
+      
+      const siblings = getTreeChildren(parent);
+      const currentIndex = siblings.indexOf(element);
+      
+      if (currentIndex <= 0) return; // Already at bottom
+      
+      // Swap with previous sibling
+      const prevSibling = siblings[currentIndex - 1];
+      if (prevSibling) {
+        parent.insertBefore(element, prevSibling);
+      }
+      
       await writeSvg(doc, node.id || null);
     },
     [animation, writeSvg],
@@ -3506,7 +5174,7 @@ function ElementsRail({
 
     return (
       <div key={`${node.tag}-${nodeKey}-${depth}`} className="flex flex-col">
-        <ElementRow
+        <MemoElementRow
           node={node}
           depth={depth}
           isLast={isLast}
@@ -3517,8 +5185,10 @@ function ElementsRail({
           isLocked={isLocked}
           isHidden={isHidden}
           hasTracks={hasTracks}
+          imageSrc={node.id ? imageSources.get(node.id) : undefined}
           onToggleCollapse={toggleCollapse}
           onSelect={handleSelectNode}
+          onSelectNode={handleSelectTreeNode}
           onToggleLock={onToggleLock}
           onToggleHide={onToggleHide}
           onRename={onRenameElement}
@@ -3527,6 +5197,7 @@ function ElementsRail({
           onEditImageSource={onEditImageSource}
           onEditPath={onEditPath}
           onEditAttributes={onEditAttributes}
+          onAskAi={handleAskAi}
           moveTargets={moveTargets}
           onGroupElement={(target) => {
             if (isSelected && groupableNodes.length > 1) {
@@ -3537,6 +5208,10 @@ function ElementsRail({
           }}
           onUngroupElement={handleUngroupElement}
           onMoveElement={handleMoveElement}
+          onBringToFront={handleBringToFront}
+          onBringForward={handleBringForward}
+          onSendBackward={handleSendBackward}
+          onSendToBack={handleSendToBack}
         />
         {!isCollapsed &&
           childNodes.map((child, index) => {
@@ -3573,17 +5248,21 @@ function ElementsRail({
           </div>
           <button
             onClick={onUndo}
-            className="grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            title="Undo"
+            disabled={!canUndo}
+            className="relative group grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-35"
+            aria-label={canUndo ? "Undo" : "Nothing to undo"}
           >
-            <IconArrowBackUp className="size-4" />
+            <IconArrowBackUp className="size-[18px]" strokeWidth={2.5} />
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Undo</span>
           </button>
           <button
             onClick={onRedo}
-            className="grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            title="Redo"
+            disabled={!canRedo}
+            className="relative group grid size-7 shrink-0 place-items-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-35"
+            aria-label={canRedo ? "Redo" : "Nothing to redo"}
           >
-            <IconArrowForwardUp className="size-4" />
+            <IconArrowForwardUp className="size-[18px]" strokeWidth={2.5} />
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Redo</span>
           </button>
         </div>
       )}
@@ -3612,7 +5291,7 @@ function ElementsRail({
                 className="grid size-6 place-items-center rounded text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 title="Add element or image (+)"
               >
-                <IconPlus className="size-3.5" />
+                <IconPlusFilled className="size-3.5" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-48">
@@ -3620,19 +5299,39 @@ function ElementsRail({
                 Add Shape
               </div>
               <DropdownMenuItem onClick={() => onAddElement("rect")}>
-                <IconSquare className="mr-2 size-4 text-emerald-500" />
+                <IconSquareFilled className="mr-2 size-4 text-emerald-500" />
                 <span>Rectangle</span>
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onAddElement("roundRect")}>
+                <IconRectangleFilled className="mr-2 size-4 text-emerald-500" />
+                <span>Rounded rectangle</span>
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onAddElement("circle")}>
-                <IconCircle className="mr-2 size-4 text-violet-500" />
+                <IconCircleFilled className="mr-2 size-4 text-violet-500" />
                 <span>Circle</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onAddElement("ellipse")}>
+                <IconOvalFilled className="mr-2 size-4 text-violet-500" />
+                <span>Ellipse</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onAddElement("triangle")}>
+                <IconTriangleFilled className="mr-2 size-4 text-amber-500" />
+                <span>Triangle</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onAddElement("star")}>
+                <IconStarFilled className="mr-2 size-4 text-yellow-500" />
+                <span>Star</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onAddElement("line")}>
+                <IconLine className="mr-2 size-4 text-indigo-500" />
+                <span>Line</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onAddElement("text")}>
                 <IconLetterT className="mr-2 size-4 text-rose-500" />
                 <span>Text</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onAddElement("g")}>
-                <IconFolderPlus className="mr-2 size-4 text-amber-500" />
+                <IconFolderFilled className="mr-2 size-4 text-amber-500" />
                 <span>New group</span>
               </DropdownMenuItem>
               {groupableNodes.length > 0 ? (
@@ -3644,7 +5343,7 @@ function ElementsRail({
                   <DropdownMenuItem
                     onClick={() => void handleGroupElements(groupableNodes)}
                   >
-                    <IconFolderPlus className="mr-2 size-4 text-amber-500" />
+                    <IconFolderFilled className="mr-2 size-4 text-amber-500" />
                     <span>
                       {groupableNodes.length > 1
                         ? `Group ${groupableNodes.length} selected`
@@ -3655,9 +5354,63 @@ function ElementsRail({
                     <DropdownMenuItem
                       onClick={() => void handleUngroupElement(selectedNode)}
                     >
-                      <IconFolderOpen className="mr-2 size-4 text-amber-500" />
+                      <IconFolderOpenFilled className="mr-2 size-4 text-amber-500" />
                       <span>Ungroup selected</span>
                     </DropdownMenuItem>
+                  ) : null}
+                  {selectedNode && selectedNode.id ? (
+                    <DropdownMenuItem
+                      onClick={() => void handleConvertToComponent(selectedNode)}
+                    >
+                      <IconTransformFilled className="mr-2 size-4 text-[#2391FF]" />
+                      <span>Convert selected to component</span>
+                    </DropdownMenuItem>
+                  ) : null}
+                  {selectedIds.length >= 2 ? (
+                    <>
+                      <DropdownMenuItem onClick={() => void handleMaskOrClip("mask")}>
+                        <IconEyeFilled className="mr-2 size-4 text-violet-500" />
+                        <span>Mask with first selected</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void handleMaskOrClip("clip")}>
+                        <IconEyeFilled className="mr-2 size-4 text-violet-500" />
+                        <span>Clip with first selected</span>
+                      </DropdownMenuItem>
+                    </>
+                  ) : null}
+                  {selectedIds.length >= 1 ? (
+                    <DropdownMenuItem onClick={() => void handleClearMaskClip()}>
+                      <IconEyeOff className="mr-2 size-4 text-muted-foreground" />
+                      <span>Clear mask / clip</span>
+                    </DropdownMenuItem>
+                  ) : null}
+                  {selectedNode && selectedNode.id && ["rect", "circle", "ellipse", "polygon", "polyline", "line"].includes(selectedNode.tag.toLowerCase()) ? (
+                    <DropdownMenuItem onClick={() => void handleConvertToPath(selectedNode)}>
+                      <PenTool className="mr-2 size-4 text-[#2391FF]" />
+                      <span>Convert to path</span>
+                    </DropdownMenuItem>
+                  ) : null}
+                  {selectedNode && selectedNode.tag.toLowerCase() === "path" ? (
+                    <DropdownMenuItem onClick={() => void handleSimplifyPath(selectedNode)}>
+                      <IconTransformFilled className="mr-2 size-4 text-[#2391FF]" />
+                      <span>Simplify path</span>
+                    </DropdownMenuItem>
+                  ) : null}
+                  {selectedIds.length >= 2 ? (
+                    <>
+                      <DropdownMenuItem onClick={() => void handleBooleanOp("union")}>
+                        <IconSquareFilled className="mr-2 size-4 text-emerald-500" />
+                        <span>Union paths</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void handleBooleanOp("subtract")}>
+                        <IconSquareFilled className="mr-2 size-4 text-red-500" />
+                        <span>Subtract second from first</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void handleBooleanOp("intersect")}>
+                        <IconSquareFilled className="mr-2 size-4 text-amber-500" />
+                        <span>Intersect paths</span>
+                      </DropdownMenuItem>
+                    </>
                   ) : null}
                 </>
               ) : null}
@@ -3666,7 +5419,7 @@ function ElementsRail({
                 Add Image
               </div>
               <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
-                <IconPhoto className="mr-2 size-4 text-sky-500" />
+                <IconPhotoFilled className="mr-2 size-4 text-sky-500" />
                 <span>Upload image…</span>
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -3682,8 +5435,36 @@ function ElementsRail({
                   if (url && url !== "https://") onAddImage(url.trim());
                 }}
               >
-                <IconLink className="mr-2 size-4 text-muted-foreground" />
+                <IconLinkFilled className="mr-2 size-4 text-muted-foreground" />
                 <span>Image from URL…</span>
+              </DropdownMenuItem>
+              <div className="my-1 h-px bg-border" />
+              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Import SVG
+              </div>
+              <DropdownMenuItem onClick={() => svgFileInputRef.current?.click()}>
+                <IconDownloadFilled className="mr-2 size-4 text-[#2391FF]" />
+                <span>Import SVG file…</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => tracePngInputRef.current?.click()}>
+                <IconPhotoFilled className="mr-2 size-4 text-[#2391FF]" />
+                <span>Trace PNG to path…</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={async () => {
+                  const text = await prompt({
+                    title: "Paste SVG markup",
+                    label: "SVG markup",
+                    multiline: true,
+                    placeholder: "<svg …>…</svg>",
+                    required: true,
+                    confirmLabel: "Import",
+                  });
+                  if (text) onImportSvg?.(text);
+                }}
+              >
+                <IconEditFilled className="mr-2 size-4 text-[#2391FF]" />
+                <span>Paste SVG markup…</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -3699,7 +5480,7 @@ function ElementsRail({
                 : "Group selected element · Cmd/Ctrl-click elements to multi-select"
             }
           >
-            <IconFolderPlus className="size-3.5" />
+            <IconFolderFilled className="size-3.5" />
           </button>
 
           {canUngroup && selectedNode ? (
@@ -3709,7 +5490,7 @@ function ElementsRail({
               className="grid size-6 place-items-center rounded text-amber-600 transition-colors hover:bg-amber-500/10 dark:text-amber-400"
               title="Ungroup selected group"
             >
-              <IconFolderOpen className="size-3.5" />
+              <IconFolderOpenFilled className="size-3.5" />
             </button>
           ) : null}
 
@@ -3724,6 +5505,28 @@ function ElementsRail({
               e.target.value = "";
             }}
           />
+          <input
+            ref={tracePngInputRef}
+            type="file"
+            accept="image/png,image/*"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) await handleTracePngFile(file);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={svgFileInputRef}
+            type="file"
+            accept=".svg,image/svg+xml"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) onImportSvg?.(await file.text());
+              e.target.value = "";
+            }}
+          />
         </div>
         <div className="flex items-center gap-1">
           {hiddenIds.size > 0 && (
@@ -3732,7 +5535,7 @@ function ElementsRail({
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
               title={`Unhide all (${hiddenIds.size} hidden)`}
             >
-              <IconEye className="size-3" />
+              <IconEyeFilled className="size-3" />
               <span>Unhide all</span>
             </button>
           )}
@@ -3752,9 +5555,9 @@ function ElementsRail({
             title={allCollapsed ? "Expand all" : "Collapse all"}
           >
             {allCollapsed ? (
-              <IconChevronRight className="size-3.5" />
+              <IconChevronRightFilled className="size-3.5" />
             ) : (
-              <IconChevronDown className="size-3.5" />
+              <IconChevronDownFilled className="size-3.5" />
             )}
           </button>
         </div>
@@ -3764,7 +5567,7 @@ function ElementsRail({
       {totalElements > 4 && (
         <div className="border-b border-sidebar-border/40 px-3 py-1.5">
           <div className="relative flex items-center">
-            <IconSearch className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
+            <IconSearchFilled className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
             <Input
               type="text"
               value={searchQuery}
@@ -3797,6 +5600,20 @@ function ElementsRail({
             No elements
           </div>
         )}
+        {defsList.length > 0 ? (
+          <div className="mt-3 border-t border-sidebar-border/40 pt-2">
+            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Definitions ({defsList.length}) — not selectable
+            </div>
+            {defsList.map((def) => (
+              <div key={def.id} className="flex items-center gap-2 px-2 py-1 text-xs text-sidebar-foreground/70">
+                <span className="rounded bg-sidebar-accent px-1.5 py-0.5 text-[10px] font-mono">{def.tag}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{def.id}</span>
+              </div>
+            ))}
+            <p className="px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">Gradients, patterns, filters, markers, masks and clips live here. They are edited from the Properties panel, not selected on canvas.</p>
+          </div>
+        ) : null}
       </div>
       {promptDialog}
     </div>
@@ -3816,7 +5633,10 @@ function StudioTopBar({
       <div className="flex min-w-0 items-center justify-center">{center}</div>
       <div className="flex items-center justify-end gap-1">
         {right}
-        <AgentToggleButton className="size-7" />
+        <div className="relative group">
+          <AgentToggleButton className="size-7" />
+          <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Agent</span>
+        </div>
       </div>
     </header>
   );
@@ -3835,7 +5655,7 @@ function EmptyStudio({
       <div className="flex flex-1 items-center justify-center p-8">
         <div className="max-w-sm space-y-4 text-center">
           <div className="mx-auto grid size-12 place-items-center rounded-lg bg-muted text-foreground">
-            <IconSparkles className="size-5" />
+            <IconSparklesFilled className="size-5" />
           </div>
           <h1 className="text-lg font-semibold tracking-tight">
             {loading ? "Opening the studio…" : "Start something moving"}
@@ -3877,10 +5697,14 @@ function StudioWorkspace({
   timelineHeight,
   onTimelineHeightChange,
   onRegisterUndoRedo,
+  onHistoryChange,
   selectedElementId,
   onSelectElement,
   hiddenIds,
   lockedIds,
+  onAddImage,
+  onAddElement,
+  onAddPath,
 }: {
   animation: MotionAnimation;
   title: string;
@@ -3888,10 +5712,15 @@ function StudioWorkspace({
   timelineHeight: number;
   onTimelineHeightChange: (height: number) => void;
   onRegisterUndoRedo?: (undo: () => void, redo: () => void) => void;
+  /** Fired whenever undo/redo availability changes, so the sidebar buttons can fade out. */
+  onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
   selectedElementId?: string | null | undefined;
   onSelectElement?: (id: string | null) => void;
   hiddenIds?: Set<string>;
   lockedIds?: Set<string>;
+  onAddImage?: (data: File | string) => void;
+  onAddElement?: (type: AddableElement) => void;
+  onAddPath?: (points: Array<{ x: number; y: number }>, closed: boolean) => void;
 }) {
   const artboardSize = useMemo(
     () => parseSvgSize(animation.svg ?? ""),
@@ -3903,17 +5732,420 @@ function StudioWorkspace({
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [duration, setDuration] = useState(animation.duration);
   const [loop, setLoop] = useState(animation.loop);
+  // Declared here, before handleAlign and the selection-sync effect that
+  // both read it — declaring it lower caused a TDZ crash at render time,
+  // because the sync effect's dependency array is evaluated during render.
+  const [multiSelection, setMultiSelection] = useState<string[]>([]);
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  const imageDragDepthRef = useRef(0);
+  const { prompt, dialog: imagePromptDialog } = usePromptDialog();
+
+  const insertImageFile = useCallback(
+    (file: File | null | undefined) => {
+      if (!file || !onAddImage || !file.type.startsWith("image/")) return false;
+      onAddImage(file);
+      return true;
+    },
+    [onAddImage],
+  );
+
+  const handleDuplicate = async () => {
+    if (!animation || !selectedElementId) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const el = doc.getElementById(selectedElementId);
+    if (!el || el === doc.documentElement) {
+      toast.error("Cannot duplicate the artboard");
+      return;
+    }
+    
+    // Clone the element
+    const clone = el.cloneNode(true) as Element;
+    
+    // Generate new ID for the clone
+    const oldId = selectedElementId;
+    const match = oldId.match(/^(.+?)(-\d+)?$/);
+    const base = match ? match[1] : oldId;
+    const newId = `${base}-${Math.random().toString(36).substring(2, 6)}`;
+    clone.setAttribute("id", newId);
+    
+    // Recursively update IDs of children to avoid duplicates
+    const updateChildIds = (node: Element) => {
+      Array.from(node.children).forEach((child) => {
+        const childId = child.getAttribute("id");
+        if (childId) {
+          child.setAttribute("id", `${childId}-${Math.random().toString(36).substring(2, 6)}`);
+        }
+        updateChildIds(child);
+      });
+    };
+    updateChildIds(clone);
+    
+    // Offset position slightly so it's visible
+    const offsetAttributes = [
+      { x: "x", y: "y" }, // rect, image, text
+      { x: "cx", y: "cy" }, // circle, ellipse
+      { x: "x1", y: "y1" }, // line (first point)
+      { x: "x2", y: "y2" }, // line (second point)
+    ];
+    
+    for (const { x, y } of offsetAttributes) {
+      const xVal = clone.getAttribute(x);
+      const yVal = clone.getAttribute(y);
+      if (xVal) clone.setAttribute(x, String(Number(xVal) + 10));
+      if (yVal) clone.setAttribute(y, String(Number(yVal) + 10));
+    }
+    
+    // Handle polygon/polyline points
+    const points = clone.getAttribute("points");
+    if (points) {
+      const offsetPoints = points.split(/[\s,]+/).map((val, i) => {
+        const num = Number(val);
+        return Number.isFinite(num) ? num + 10 : val;
+      }).join(" ");
+      clone.setAttribute("points", offsetPoints);
+    }
+    
+    // Handle path data
+    const d = clone.getAttribute("d");
+    if (d) {
+      // Simple offset: add 10 to all coordinates (works for M and L commands)
+      const offsetD = d.replace(/([-+]?\d+\.?\d*)/g, (match) => {
+        const num = parseFloat(match);
+        return Number.isFinite(num) ? String(num + 10) : match;
+      });
+      clone.setAttribute("d", offsetD);
+    }
+    
+    // Insert the clone after the original
+    el.parentNode?.insertBefore(clone, el.nextSibling);
+    
+    const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+    
+    // Clone tracks too
+    const nextTracks = [
+      ...tracks,
+      ...tracks.filter(t => t.target === oldId).map(t => ({
+        ...t,
+        target: newId,
+        keyframes: [...t.keyframes]
+      }))
+    ];
+    
+    await onSave({ ...animation, title, svg: nextSvg, tracks: nextTracks, duration, loop });
+    onSelectElement?.(newId);
+    toast.success(`Duplicated #${oldId}`);
+  };
+
+  const handleAlign = async (type: "left" | "center-h" | "right" | "top" | "middle" | "bottom") => {
+    if (multiSelection.length < 2 || !animation) return;
+    
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const svg = stageRef.current?.querySelector("svg");
+    if (!svg) return;
+    // Bounding boxes are in screen pixels, but translateX/Y are in SVG user
+    // units — at any zoom other than 100% the raw pixel delta is wrong by
+    // the zoom factor, so convert it with the same factor drag uses.
+    const ctm = svg.getScreenCTM();
+    const unitsPerPx = ctm && ctm.a ? 1 / ctm.a : 1;
+    
+    // Get bounding boxes for all selected elements
+    const boxes: Array<{ id: string; bbox: DOMRect; el: Element }> = [];
+    for (const id of multiSelection) {
+      const el = doc.getElementById(id);
+      const domEl = svg.querySelector(`#${CSS.escape(id)}`);
+      if (el && domEl) {
+        boxes.push({ id, bbox: domEl.getBoundingClientRect(), el });
+      }
+    }
+    
+    if (boxes.length < 2) return;
+    
+    // Calculate reference position based on alignment type
+    let refValue = 0;
+    if (type === "left") {
+      refValue = Math.min(...boxes.map(b => b.bbox.left));
+    } else if (type === "center-h") {
+      const leftmost = Math.min(...boxes.map(b => b.bbox.left));
+      const rightmost = Math.max(...boxes.map(b => b.bbox.right));
+      refValue = (leftmost + rightmost) / 2;
+    } else if (type === "right") {
+      refValue = Math.max(...boxes.map(b => b.bbox.right));
+    } else if (type === "top") {
+      refValue = Math.min(...boxes.map(b => b.bbox.top));
+    } else if (type === "middle") {
+      const topmost = Math.min(...boxes.map(b => b.bbox.top));
+      const bottommost = Math.max(...boxes.map(b => b.bbox.bottom));
+      refValue = (topmost + bottommost) / 2;
+    } else if (type === "bottom") {
+      refValue = Math.max(...boxes.map(b => b.bbox.bottom));
+    }
+    
+    // Apply alignment by updating translateX or translateY
+    const isHorizontal = ["left", "center-h", "right"].includes(type);
+    const property: Property = isHorizontal ? "translateX" : "translateY";
+    
+    for (const { id, bbox } of boxes) {
+      const current = isHorizontal 
+        ? (type === "left" ? bbox.left : type === "right" ? bbox.right : (bbox.left + bbox.right) / 2)
+        : (type === "top" ? bbox.top : type === "bottom" ? bbox.bottom : (bbox.top + bbox.bottom) / 2);
+      
+      const delta = (refValue - current) * unitsPerPx;
+      
+      // Get current translateX/Y value or default to 0. `time` is already
+      // normalised 0-1 (the tick adds dt / duration), so it is the keyframe
+      // time directly - dividing by duration again sampled the wrong keyframe.
+      const existingTrack = tracks.find(t => t.target === id && t.property === property);
+      const currentValue = existingTrack 
+        ? sampleTrack(existingTrack, time)
+        : 0;
+      const newValue = (typeof currentValue === "number" ? currentValue : 0) + delta;
+      
+      // Update the track or create a new one
+      const trackIndex = tracks.findIndex(t => t.target === id && t.property === property);
+      if (trackIndex >= 0) {
+        // Update existing track's value at current time
+        setTracks(prev => prev.map((t, i) => {
+          if (i !== trackIndex) return t;
+          const kfIndex = t.keyframes.findIndex(kf => Math.abs(kf.t - time) < 0.005);
+          if (kfIndex >= 0) {
+            return {
+              ...t,
+              keyframes: t.keyframes.map((kf, ki) => 
+                ki === kfIndex ? { ...kf, v: newValue } : kf
+              )
+            };
+          } else {
+            return {
+              ...t,
+              keyframes: [...t.keyframes, { t: time, v: newValue, ease: "ease-in-out" }].sort((a, b) => a.t - b.t)
+            };
+          }
+        }));
+      } else {
+        // Create new track
+        setTracks(prev => [...prev, {
+          target: id,
+          property,
+          keyframes: [
+            { t: 0, v: newValue, ease: "ease-in-out" },
+            { t: 1, v: newValue, ease: "ease-in-out" },
+          ]
+        }]);
+      }
+    }
+    
+    toast.success(`Aligned ${multiSelection.length} elements`);
+  };
+
+  const handleDistribute = async (direction: "horizontal" | "vertical") => {
+    if (multiSelection.length < 3 || !animation) return;
+    
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const svg = stageRef.current?.querySelector("svg");
+    if (!svg) return;
+    // Same screen-pixel to user-unit conversion as handleAlign.
+    const ctm = svg.getScreenCTM();
+    const unitsPerPx = ctm && ctm.a ? 1 / ctm.a : 1;
+    
+    // Get bounding boxes for all selected elements
+    const boxes: Array<{ id: string; bbox: DOMRect; el: Element }> = [];
+    for (const id of multiSelection) {
+      const el = doc.getElementById(id);
+      const domEl = svg.querySelector(`#${CSS.escape(id)}`);
+      if (el && domEl) {
+        boxes.push({ id, bbox: domEl.getBoundingClientRect(), el });
+      }
+    }
+    
+    if (boxes.length < 3) return;
+    
+    // Sort by position
+    const isHorizontal = direction === "horizontal";
+    boxes.sort((a, b) => {
+      const aPos = isHorizontal ? a.bbox.left : a.bbox.top;
+      const bPos = isHorizontal ? b.bbox.left : b.bbox.top;
+      return aPos - bPos;
+    });
+    
+    const first = boxes[0]!.bbox;
+    const last = boxes[boxes.length - 1]!.bbox;
+    const totalSpace = isHorizontal 
+      ? (last.right - first.left)
+      : (last.bottom - first.top);
+    const totalElementSize = boxes.reduce((sum, b) => 
+      sum + (isHorizontal ? b.bbox.width : b.bbox.height), 0
+    );
+    const gap = (totalSpace - totalElementSize) / (boxes.length - 1);
+    
+    // Calculate target positions
+    let currentPos = isHorizontal ? first.left : first.top;
+    const property: Property = isHorizontal ? "translateX" : "translateY";
+    
+    for (let i = 0; i < boxes.length; i++) {
+      const { id, bbox } = boxes[i]!;
+      const currentCenter = isHorizontal 
+        ? bbox.left + bbox.width / 2
+        : bbox.top + bbox.height / 2;
+      const targetCenter = isHorizontal
+        ? currentPos + bbox.width / 2
+        : currentPos + bbox.height / 2;
+      const delta = (targetCenter - currentCenter) * unitsPerPx;
+      
+      // Update track (`time` is already normalised 0-1, see handleAlign)
+      const existingTrack = tracks.find(t => t.target === id && t.property === property);
+      const currentValue = existingTrack 
+        ? sampleTrack(existingTrack, time)
+        : 0;
+      const newValue = (typeof currentValue === "number" ? currentValue : 0) + delta;
+      
+      const trackIndex = tracks.findIndex(t => t.target === id && t.property === property);
+      if (trackIndex >= 0) {
+        setTracks(prev => prev.map((t, idx) => {
+          if (idx !== trackIndex) return t;
+          const kfIndex = t.keyframes.findIndex(kf => Math.abs(kf.t - time) < 0.005);
+          if (kfIndex >= 0) {
+            return {
+              ...t,
+              keyframes: t.keyframes.map((kf, ki) => 
+                ki === kfIndex ? { ...kf, v: newValue } : kf
+              )
+            };
+          } else {
+            return {
+              ...t,
+              keyframes: [...t.keyframes, { t: time, v: newValue, ease: "ease-in-out" }].sort((a, b) => a.t - b.t)
+            };
+          }
+        }));
+      } else {
+        setTracks(prev => [...prev, {
+          target: id,
+          property,
+          keyframes: [
+            { t: 0, v: newValue, ease: "ease-in-out" },
+            { t: 1, v: newValue, ease: "ease-in-out" },
+          ]
+        }]);
+      }
+      
+      currentPos += (isHorizontal ? bbox.width : bbox.height) + gap;
+    }
+    
+    toast.success(`Distributed ${multiSelection.length} elements`);
+  };
+
+  // Sync multi-selection with single selection, without clobbering a
+  // multi-selection that already contains the primary id (canvas
+  // Shift/Cmd-clicks and Elements-panel additive clicks both set the
+  // primary to a member of their multi-selection). Only a primary id
+  // outside the current multi-selection resets it to a single selection.
+  useEffect(() => {
+    if (!selectedElementId) {
+      setMultiSelection([]);
+    } else if (!multiSelection.includes(selectedElementId)) {
+      setMultiSelection([selectedElementId]);
+    }
+  }, [selectedElementId, multiSelection]);
+
+  const handleImageDragEnter = (e: React.DragEvent) => {
+    if (!onAddImage) return;
+    if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    imageDragDepthRef.current += 1;
+    setIsDraggingImage(true);
+  };
+
+  const handleImageDragOver = (e: React.DragEvent) => {
+    if (!onAddImage) return;
+    if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleImageDragLeave = () => {
+    imageDragDepthRef.current = Math.max(0, imageDragDepthRef.current - 1);
+    if (imageDragDepthRef.current === 0) setIsDraggingImage(false);
+  };
+
+  const handleImageDrop = (e: React.DragEvent) => {
+    if (!onAddImage) return;
+    e.preventDefault();
+    imageDragDepthRef.current = 0;
+    setIsDraggingImage(false);
+    const file = Array.from(e.dataTransfer.files).find((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (file) insertImageFile(file);
+  };
+
+  // Paste an image straight onto the artboard (e.g. a screenshot).
+  useEffect(() => {
+    if (!onAddImage) return;
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      // Pasting SVG markup (e.g. copied from Figma or another editor)
+      // imports it as vectors, not as an image.
+      const text = e.clipboardData?.getData("text")?.trim() ?? "";
+      if (text.startsWith("<svg") && animation) {
+        const nextSvg = mergeSvgIntoArtboard(animation.svg, text);
+        if (nextSvg) {
+          e.preventDefault();
+          void onSave({ ...animation, svg: nextSvg });
+          toast.success("SVG pasted");
+          return;
+        }
+      }
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (!item.type.startsWith("image/")) continue;
+        const file = item.getAsFile();
+        if (file && insertImageFile(file)) {
+          e.preventDefault();
+          return;
+        }
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [insertImageFile, onAddImage, animation, onSave]);
 
   const historyRef = useRef<StudioSnapshot[]>([
     {
       tracks: cloneTracks(animation.tracks ?? []),
       duration: animation.duration,
       loop: animation.loop,
+      svg: animation.svg ?? "",
     },
   ]);
   const indexRef = useRef(0);
   const skipRef = useRef(false);
   const lastHistoryAtRef = useRef(0);
+
+  // Notify the sidebar about undo/redo availability. History lives in refs,
+  // so without this the buttons would have no way to know when to fade.
+  const onHistoryChangeRef = useRef(onHistoryChange);
+  onHistoryChangeRef.current = onHistoryChange;
+  const lastNotifiedRef = useRef<{
+    canUndo: boolean;
+    canRedo: boolean;
+  } | null>(null);
+  const notifyHistory = useCallback(() => {
+    const canUndo = indexRef.current > 0;
+    const canRedo = indexRef.current < historyRef.current.length - 1;
+    const last = lastNotifiedRef.current;
+    if (last && last.canUndo === canUndo && last.canRedo === canRedo) return;
+    lastNotifiedRef.current = { canUndo, canRedo };
+    onHistoryChangeRef.current?.(canUndo, canRedo);
+  }, []);
 
   useEffect(() => {
     if (skipRef.current) {
@@ -3925,6 +6157,7 @@ function StudioWorkspace({
       tracks: cloneTracks(tracks),
       duration,
       loop,
+      svg: animation.svg ?? "",
     };
     if (JSON.stringify(current) === JSON.stringify(next)) return;
 
@@ -3939,7 +6172,10 @@ function StudioWorkspace({
       indexRef.current = historyRef.current.length - 1;
     }
     lastHistoryAtRef.current = now;
-  }, [tracks, duration, loop]);
+    notifyHistory();
+    // animation.svg is a dependency so artwork edits (delete, node edits,
+    // properties, group/arrange) become undo steps too, not just tracks.
+  }, [tracks, duration, loop, animation.svg, notifyHistory]);
 
   const undo = useCallback(() => {
     if (indexRef.current <= 0) return;
@@ -3950,7 +6186,17 @@ function StudioWorkspace({
     setTracks(cloneTracks(snapshot.tracks));
     setDuration(snapshot.duration);
     setLoop(snapshot.loop);
-  }, []);
+    // Restore the artwork too, otherwise undoing a delete would leave the
+    // element gone while only rewinding its keyframes.
+    void onSave({
+      ...animation,
+      svg: snapshot.svg,
+      tracks: cloneTracks(snapshot.tracks),
+      duration: snapshot.duration,
+      loop: snapshot.loop,
+    });
+    notifyHistory();
+  }, [notifyHistory, animation, onSave]);
 
   const redo = useCallback(() => {
     if (indexRef.current >= historyRef.current.length - 1) return;
@@ -3961,11 +6207,20 @@ function StudioWorkspace({
     setTracks(cloneTracks(snapshot.tracks));
     setDuration(snapshot.duration);
     setLoop(snapshot.loop);
-  }, []);
+    void onSave({
+      ...animation,
+      svg: snapshot.svg,
+      tracks: cloneTracks(snapshot.tracks),
+      duration: snapshot.duration,
+      loop: snapshot.loop,
+    });
+    notifyHistory();
+  }, [notifyHistory, animation, onSave]);
 
   useEffect(() => {
     onRegisterUndoRedo?.(undo, redo);
-  }, [onRegisterUndoRedo, undo, redo]);
+    notifyHistory();
+  }, [onRegisterUndoRedo, undo, redo, notifyHistory]);
 
   // Adopt edits made elsewhere (the agent or another tab) without remounting
   // the studio, so the playhead, selection and expanded tracks survive
@@ -4148,8 +6403,9 @@ function StudioWorkspace({
 
   const [selectionBox, setSelectionBox] = useState<ElementBox | null>(null);
   const [artboardBackground, setArtboardBackground] = useState<
-    "white" | "checker"
+    "white" | "checker" | "custom"
   >("white");
+  const [artboardBgColor, setArtboardBgColor] = useState("#ffffff");
   const [guides, setGuides] = useState<{ x: number | null; y: number | null }>({
     x: null,
     y: null,
@@ -4319,15 +6575,488 @@ function StudioWorkspace({
     }
   };
 
-  const [tool, setTool] = useState<"select" | "hand">("select");
+  // Keyboard group / ungroup / flip / centre-selection, implemented here
+  // (canvas selection lives in this component) rather than in ElementsRail.
+  const groupCanvasSelection = useCallback(() => {
+    if (!animation) return;
+    const ids = multiSelection.length > 0 ? multiSelection : selectedElementId ? [selectedElementId] : [];
+    if (ids.length === 0) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const elements = ids.map((id) => doc.getElementById(id)).filter((el): el is Element => Boolean(el));
+    if (elements.length === 0) return;
+    const parent = elements[0]!.parentElement;
+    if (!parent || !elements.every((el) => el.parentElement === parent)) {
+      toast.error("Group only works for elements with the same parent.");
+      return;
+    }
+    const group = doc.createElementNS(SVG_NS, "g");
+    let id = `group-${Math.random().toString(36).slice(2, 6)}`;
+    while (doc.getElementById(id)) id = `group-${Math.random().toString(36).slice(2, 6)}`;
+    group.setAttribute("id", id);
+    parent.insertBefore(group, elements[0]!);
+    elements.forEach((el) => group.appendChild(el));
+    const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+    void onSave({ ...animation, svg: nextSvg });
+    onSelectElement?.(id);
+    setMultiSelection([id]);
+  }, [animation, multiSelection, selectedElementId, onSave, onSelectElement]);
+
+  const ungroupCanvasSelection = useCallback(() => {
+    if (!animation || !selectedElementId) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const element = doc.getElementById(selectedElementId);
+    if (!element || element.nodeName.toLowerCase() !== "g" || !element.hasChildNodes()) return;
+    const parent = element.parentElement;
+    if (!parent) return;
+    const firstChildId = element.firstElementChild?.getAttribute("id") ?? null;
+    while (element.firstChild) parent.insertBefore(element.firstChild, element);
+    parent.removeChild(element);
+    const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+    void onSave({ ...animation, svg: nextSvg });
+    if (firstChildId) onSelectElement?.(firstChildId);
+  }, [animation, selectedElementId, onSave, onSelectElement]);
+
+  const flipCanvasSelection = useCallback((axis: "x" | "y") => {
+    if (!selectedElementId) return;
+    const prop: Property = axis === "x" ? "scaleX" : "scaleY";
+    const current = sampleTargetProperty(selectedElementId, prop, time, 1);
+    updateTargetProperty(selectedElementId, prop, -current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedElementId, time, tracks]);
+
+  // Motion path: the selected element moves along a path element that is
+  // also in the canvas multi-selection. Path shape is sampled with the
+  // browser's getPointAtLength, and the result is written as ordinary
+  // translateX/translateY tracks (relative to the path's start), so it
+  // previews, graphs and exports like any other animation.
+  const animateAlongPath = useCallback(() => {
+    if (!animation || !selectedElementId) { toast.error("Select an element, then Shift-click a path."); return; }
+    const pathId = multiSelection.find((id) => id !== selectedElementId);
+    if (!pathId) { toast.error("Shift-click a path element to use as the motion path."); return; }
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const pathEl = doc.getElementById(pathId);
+    if (!pathEl || pathEl.nodeName.toLowerCase() !== "path") { toast.error("The second selection must be a <path>."); return; }
+    const d = pathEl.getAttribute("d") || "";
+    if (!d) return;
+    const probe = document.createElementNS(SVG_NS, "path");
+    probe.setAttribute("d", d);
+    let total = 0;
+    try { total = probe.getTotalLength(); } catch { toast.error("That path could not be measured."); return; }
+    if (!total) { toast.error("That path has no length."); return; }
+    const start = probe.getPointAtLength(0);
+    const times = [0, 0.25, 0.5, 0.75, 1];
+    const xs = times.map((t) => Math.round((probe.getPointAtLength(t * total).x - start.x) * 100) / 100);
+    const ys = times.map((t) => Math.round((probe.getPointAtLength(t * total).y - start.y) * 100) / 100);
+    setTracks((prev) => {
+      const without = prev.filter((tr) => !(tr.target === selectedElementId && (tr.property === "translateX" || tr.property === "translateY")));
+      return [...without, { target: selectedElementId, property: "translateX", keyframes: times.map((t, i) => ({ t, v: xs[i]! })) }, { target: selectedElementId, property: "translateY", keyframes: times.map((t, i) => ({ t, v: ys[i]! })) }];
+    });
+    toast.success("Motion path applied — the element now follows the path");
+  }, [animation, selectedElementId, multiSelection]);
+
+  // Stagger: shift each selected element's keyframes later by its index
+  // times a delay, so a shared animation ripples through the selection
+  // instead of playing in unison.
+  const staggerCanvasSelection = useCallback(async () => {
+    const ids = multiSelection.length > 0 ? multiSelection : selectedElementId ? [selectedElementId] : [];
+    if (ids.length < 2) { toast.error("Select at least two elements to stagger."); return; }
+    const answer = await prompt({ title: "Stagger", label: "Delay between elements (seconds)", defaultValue: "0.1", placeholder: "0.1", required: true, confirmLabel: "Stagger" });
+    const delaySec = parseFloat(answer || "");
+    if (!Number.isFinite(delaySec) || delaySec <= 0) return;
+    const delayNorm = delaySec / (duration / 1000);
+    setTracks((prev) => prev.map((tr) => {
+      const idx = ids.indexOf(tr.target);
+      if (idx <= 0) return tr;
+      return { ...tr, keyframes: tr.keyframes.map((k) => ({ ...k, t: Math.min(1, k.t + idx * delayNorm) })) };
+    }));
+    toast.success(`Staggered ${ids.length} elements by ${delaySec}s each`);
+  }, [multiSelection, selectedElementId, duration, prompt]);
+
+  const centreCanvasSelection = useCallback(() => {
+    const box = selectionBox;
+    const viewer = viewerRef.current;
+    if (!box || !viewer) return;
+    const rect = viewer.getBoundingClientRect();
+    const dx = rect.width / 2 - (box.x + box.w / 2);
+    const dy = rect.height / 2 - (box.y + box.h / 2);
+    setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+  }, [selectionBox]);
+
+  // Resize is not a separate tool anymore: Select & Move (transform) shows
+  // the corner handles, so dragging a corner resizes and dragging the body
+  // moves, with no mode switch in between.
+  const [tool, setTool] = useState<"transform" | "hand" | "pen" | "node">("transform");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [showGrid, setShowGrid] = useState(false);
+  const [gridSize, setGridSize] = useState(20);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+
+  // Snap a value to the grid
+  const snapValue = useCallback((value: number) => {
+    if (!snapToGrid || !showGrid) return value;
+    return Math.round(value / gridSize) * gridSize;
+  }, [snapToGrid, showGrid, gridSize]);
   const [isPanning, setIsPanning] = useState(false);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const spaceDownTimeRef = useRef(0);
   const hasPannedRef = useRef(false);
 
   const effectiveTool = isSpacePressed ? "hand" : tool;
+
+  // Pen tool state. A point may carry bezier handles from a click-drag:
+  // out = outgoing handle of this anchor, in = incoming handle (mirrored
+  // from out for a smooth anchor, so a dragged curve stays smooth).
+  type PenPoint = { x: number; y: number; outX?: number; outY?: number; inX?: number; inY?: number };
+  const [penPoints, setPenPoints] = useState<PenPoint[]>([]);
+  const [penHover, setPenHover] = useState<{ x: number; y: number } | null>(null);
+  const penPointsRef = useRef<PenPoint[]>([]);
+  const penDragRef = useRef<{ index: number; startX: number; startY: number } | null>(null);
+  useEffect(() => {
+    penPointsRef.current = penPoints;
+  }, [penPoints]);
+  const penStartPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (tool !== "pen") {
+      if (penPointsRef.current.length > 0) {
+        setPenPoints([]);
+        setPenHover(null);
+      }
+    }
+  }, [tool]);
+
+  useEffect(() => {
+    setPenPoints([]);
+    setPenHover(null);
+  }, [animation?.id]);
+
+  const cancelPen = useCallback(() => {
+    setPenPoints([]);
+    setPenHover(null);
+  }, []);
+
+  // Build the pen preview / final path: a segment is a cubic bezier when
+  // either side carries a handle, otherwise a straight line.
+  const penPathD = (pts: PenPoint[], closed: boolean) => {
+    if (pts.length === 0) return "";
+    const r = (v: number) => Math.round(v * 100) / 100;
+    let d = `M ${r(pts[0]!.x)} ${r(pts[0]!.y)}`;
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1]!;
+      const cur = pts[i]!;
+      if (prev.outX !== undefined || cur.inX !== undefined) {
+        const c1x = prev.outX ?? prev.x;
+        const c1y = prev.outY ?? prev.y;
+        const c2x = cur.inX ?? cur.x;
+        const c2y = cur.inY ?? cur.y;
+        d += ` C ${r(c1x)} ${r(c1y)} ${r(c2x)} ${r(c2y)} ${r(cur.x)} ${r(cur.y)}`;
+      } else {
+        d += ` L ${r(cur.x)} ${r(cur.y)}`;
+      }
+    }
+    if (closed) d += " Z";
+    return d;
+  };
+
+  // Click-drag in pen mode: while the pointer is down, moving it pulls
+  // the new anchor's outgoing handle (and mirrors its incoming handle,
+  // so the curve through that anchor stays smooth).
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const drag = penDragRef.current;
+      if (!drag) return;
+      const svg = stageRef.current?.querySelector("svg");
+      if (!svg) return;
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const ctm = svg.getScreenCTM();
+      const user = ctm ? pt.matrixTransform(ctm.inverse()) : null;
+      if (!user) return;
+      setPenPoints((prev) =>
+        prev.map((p, i) => {
+          if (i !== drag.index) return p;
+          const outX = user.x;
+          const outY = user.y;
+          // Mirror for smooth anchors (not the first point, which has no incoming side).
+          const inX = i > 0 ? 2 * p.x - outX : undefined;
+          const inY = i > 0 ? 2 * p.y - outY : undefined;
+          return { ...p, outX, outY, inX, inY };
+        }),
+      );
+    };
+    const onUp = () => { penDragRef.current = null; };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
+
+  const finishPen = useCallback(
+    (closed: boolean) => {
+      const pts = penPointsRef.current;
+      if (pts.length >= 2 && onAddPath) {
+        void onAddPath(pts.slice(), closed);
+      }
+      setPenPoints([]);
+      setPenHover(null);
+      setTool("transform");
+    },
+    [onAddPath],
+  );
+
+  // Node tool state: editable anchor points for the selected element.
+  // Works for path/polygon/polyline/line, plus rect, image, circle,
+  // ellipse and text — previously most shapes showed no nodes at all.
+  const [nodePoints, setNodePoints] = useState<Array<{ x: number; y: number }>>([]);
+  const [nodeClosed, setNodeClosed] = useState(false);
+  const [nodeTag, setNodeTag] = useState("");
+  // Anchor indices whose two C handles are mirrored (smooth) rather than
+  // independent (corner). Only anchors with both an incoming and an
+  // outgoing C control can be smooth; see bezierHandleInfo.
+  const [nodeSmooth, setNodeSmooth] = useState<Set<number>>(new Set());
+  const nodeSmoothForRef = useRef<string | null>(null);
+  const nodeDragRef = useRef<{
+    index: number;
+    startX: number;
+    startY: number;
+    initX: number;
+    initY: number;
+    initPoints: Array<{ x: number; y: number }>;
+    unitsPerPx: number;
+    mirror?: { anchorIndex: number; oppositeIndex: number } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (nodeSmoothForRef.current !== selectedElementId) {
+      nodeSmoothForRef.current = selectedElementId ?? null;
+      setNodeSmooth(new Set());
+    }
+    if (!selectedElementId || !animation?.svg) {
+      setNodePoints([]);
+      return;
+    }
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const el = doc.getElementById(selectedElementId);
+    if (!el) {
+      setNodePoints([]);
+      return;
+    }
+    const tag = el.tagName.toLowerCase();
+    setNodeTag(tag);
+    if (tag === "polygon" || tag === "polyline") {
+      setNodePoints(parsePointsAttr(el.getAttribute("points") || ""));
+      setNodeClosed(tag === "polygon");
+    } else if (tag === "line") {
+      setNodePoints([
+        {
+          x: Number(el.getAttribute("x1") || 0),
+          y: Number(el.getAttribute("y1") || 0),
+        },
+        {
+          x: Number(el.getAttribute("x2") || 0),
+          y: Number(el.getAttribute("y2") || 0),
+        },
+      ]);
+      setNodeClosed(false);
+    } else if (tag === "path") {
+      const d = el.getAttribute("d") || "";
+      setNodePoints(parsePathPoints(d));
+      setNodeClosed(/z/i.test(d));
+    } else if (tag === "rect" || tag === "image") {
+      // Four corners: dragging one resizes the box from the opposite corner.
+      const x = Number(el.getAttribute("x") || 0);
+      const y = Number(el.getAttribute("y") || 0);
+      const w = Number(el.getAttribute("width") || 0);
+      const h = Number(el.getAttribute("height") || 0);
+      setNodePoints([
+        { x, y },
+        { x: x + w, y },
+        { x: x + w, y: y + h },
+        { x, y: y + h },
+      ]);
+      setNodeClosed(false);
+    } else if (tag === "circle") {
+      const cx = Number(el.getAttribute("cx") || 0);
+      const cy = Number(el.getAttribute("cy") || 0);
+      const radius = Number(el.getAttribute("r") || 0);
+      // Centre moves it, edge point resizes it.
+      setNodePoints([
+        { x: cx, y: cy },
+        { x: cx + radius, y: cy },
+      ]);
+      setNodeClosed(false);
+    } else if (tag === "ellipse") {
+      const cx = Number(el.getAttribute("cx") || 0);
+      const cy = Number(el.getAttribute("cy") || 0);
+      const rx = Number(el.getAttribute("rx") || 0);
+      const ry = Number(el.getAttribute("ry") || 0);
+      setNodePoints([
+        { x: cx, y: cy },
+        { x: cx + rx, y: cy },
+        { x: cx, y: cy + ry },
+      ]);
+      setNodeClosed(false);
+    } else if (tag === "text") {
+      setNodePoints([
+        {
+          x: Number(el.getAttribute("x") || 0),
+          y: Number(el.getAttribute("y") || 0),
+        },
+      ]);
+      setNodeClosed(false);
+    } else {
+      setNodePoints([]);
+    }
+  }, [selectedElementId, animation?.svg]);
+
+  const commitNodePoints = useCallback(
+    (pts: Array<{ x: number; y: number }>, closed: boolean) => {
+      if (!animation || !selectedElementId) return;
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const el = doc.getElementById(selectedElementId);
+      if (!el) return;
+      const tag = el.tagName.toLowerCase();
+      const r = (v: number) => Math.round(v * 100) / 100;
+      if (tag === "polygon" || tag === "polyline") {
+        el.setAttribute(
+          "points",
+          pts.map((p) => `${r(p.x)},${r(p.y)}`).join(" "),
+        );
+      } else if (tag === "line") {
+        const a = pts[0];
+        const b = pts[1];
+        if (!a || !b) return;
+        el.setAttribute("x1", String(r(a.x)));
+        el.setAttribute("y1", String(r(a.y)));
+        el.setAttribute("x2", String(r(b.x)));
+        el.setAttribute("y2", String(r(b.y)));
+      } else if (tag === "path") {
+        // Rewrite only the edited coordinates, keeping curves, arcs and
+        // the original commands intact. If the point count ever mismatches,
+        // leave the path untouched rather than corrupting it.
+        const segments = parsePathSegments(el.getAttribute("d") || "");
+        const nextD = serializePathWithPoints(segments, pts);
+        if (nextD === null) return;
+        el.setAttribute(
+          "d",
+          closed && !/z/i.test(nextD) ? `${nextD} Z` : nextD,
+        );
+      } else if (tag === "rect" || tag === "image") {
+        if (pts.length < 4) return;
+        const xs = pts.map((p) => p.x);
+        const ys = pts.map((p) => p.y);
+        const minX = Math.min(...xs);
+        const minY = Math.min(...ys);
+        el.setAttribute("x", String(r(minX)));
+        el.setAttribute("y", String(r(minY)));
+        el.setAttribute("width", String(r(Math.max(1, Math.max(...xs) - minX))));
+        el.setAttribute("height", String(r(Math.max(1, Math.max(...ys) - minY))));
+      } else if (tag === "circle") {
+        const center = pts[0];
+        const edge = pts[1];
+        if (!center || !edge) return;
+        el.setAttribute("cx", String(r(center.x)));
+        el.setAttribute("cy", String(r(center.y)));
+        el.setAttribute(
+          "r",
+          String(r(Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y)))),
+        );
+      } else if (tag === "ellipse") {
+        const center = pts[0];
+        const right = pts[1];
+        const bottom = pts[2];
+        if (!center || !right || !bottom) return;
+        el.setAttribute("cx", String(r(center.x)));
+        el.setAttribute("cy", String(r(center.y)));
+        el.setAttribute("rx", String(r(Math.max(1, Math.abs(right.x - center.x)))));
+        el.setAttribute("ry", String(r(Math.max(1, Math.abs(bottom.y - center.y)))));
+      } else if (tag === "text") {
+        const p = pts[0];
+        if (!p) return;
+        el.setAttribute("x", String(r(p.x)));
+        el.setAttribute("y", String(r(p.y)));
+      }
+      const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+      void onSave({ ...animation, svg: nextSvg });
+    },
+    [animation, selectedElementId, onSave],
+  );
+
+  // Bezier handle geometry for the current path, recomputed when its points change.
+  const nodeBezier = useMemo(() => {
+    if (nodeTag !== "path" || nodePoints.length === 0 || !animation?.svg || !selectedElementId) return null;
+    try {
+      const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+      const el = doc.getElementById(selectedElementId);
+      if (!el) return null;
+      return bezierHandleInfo(parsePathSegments(el.getAttribute("d") || ""), nodePoints);
+    } catch {
+      return null;
+    }
+  }, [nodeTag, nodePoints, animation?.svg, selectedElementId]);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const drag = nodeDragRef.current;
+      if (!drag) return;
+      const svg = stageRef.current?.querySelector("svg");
+      if (!svg) return;
+      const ctm = svg.getScreenCTM();
+      const unitsPerPx = ctm && ctm.a ? 1 / ctm.a : drag.unitsPerPx;
+      const dx = (e.clientX - drag.startX) * unitsPerPx;
+      const dy = (e.clientY - drag.startY) * unitsPerPx;
+      // Dragging a circle/ellipse centre moves the whole shape, so its
+      // edge points must move with it — otherwise moving the centre would
+      // silently change the radius instead.
+      const moveAll =
+        (nodeTag === "circle" || nodeTag === "ellipse") && drag.index === 0;
+      setNodePoints((prev) => {
+        const next = prev.map((p, i) => {
+          if (!moveAll && i !== drag.index) return p;
+          const init = drag.initPoints[i] ?? p;
+          return { x: init.x + dx, y: init.y + dy };
+        });
+        // Smooth anchor: mirror the opposite handle around the anchor so
+        // the curve stays smooth through it while one handle is dragged.
+        if (drag.mirror) {
+          const anchor = drag.initPoints[drag.mirror.anchorIndex];
+          const dragged = next[drag.index];
+          if (anchor && dragged) {
+            next[drag.mirror.oppositeIndex] = {
+              x: 2 * anchor.x - dragged.x,
+              y: 2 * anchor.y - dragged.y,
+            };
+          }
+        }
+        return next;
+      });
+    };
+    const onUp = () => {
+      const drag = nodeDragRef.current;
+      if (drag) {
+        // Commit on release using the latest nodePoints.
+        setNodePoints((prev) => {
+          commitNodePoints(prev, nodeClosed);
+          return prev;
+        });
+      }
+      nodeDragRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [nodeClosed, nodeTag, commitNodePoints]);
 
   // Keep the selection frame glued to the element while it animates, pans,
   // zooms, or is edited.
@@ -4420,9 +7149,55 @@ function StudioWorkspace({
 
   const handleStagePointerDown = (e: React.PointerEvent) => {
     if (effectiveTool === "hand" || e.button !== 0) return;
+
+    if (tool === "node") {
+      const target = (e.target as Element).closest("[id]");
+      if (target && target.id) {
+        onSelectElement?.(target.id);
+        setPlaying(false);
+      } else {
+        onSelectElement?.(null);
+        setSelection(null);
+        setGuides({ x: null, y: null });
+      }
+      return;
+    }
+
+    if (tool === "pen") {
+      e.preventDefault();
+      e.stopPropagation();
+      const svg = stageRef.current?.querySelector("svg");
+      if (!svg) return;
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const ctm = svg.getScreenCTM();
+      const user = ctm ? pt.matrixTransform(ctm.inverse()) : null;
+      if (!user) return;
+      const point = { x: user.x, y: user.y };
+      const points = penPointsRef.current;
+      // Clicking near the first point closes the path.
+      const first = points[0];
+      if (
+        first &&
+        points.length >= 3 &&
+        Math.hypot(first.x - point.x, first.y - point.y) <
+          Math.max(4, (svg.getBoundingClientRect().width / 40))
+      ) {
+        finishPen(true);
+        return;
+      }
+      // Start a bezier drag: if the pointer moves before release, this
+      // anchor's handles are pulled out (see the pen drag effect); a plain
+      // click leaves it as a straight corner point.
+      penDragRef.current = { index: penPointsRef.current.length, startX: e.clientX, startY: e.clientY };
+      setPenPoints((prev) => [...prev, point]);
+      return;
+    }
     const target = (e.target as Element).closest("[id]");
     if (!target || !target.id) {
       onSelectElement?.(null);
+      setMultiSelection([]);
       setSelection(null);
       setGuides({ x: null, y: null });
       return;
@@ -4430,7 +7205,25 @@ function StudioWorkspace({
     const id = target.id;
     if (lockedIds?.has(id)) return;
 
+    // Shift/Cmd-click adds to (or removes from) the multi-selection used by
+    // Align/Distribute, instead of replacing it. It only changes selection,
+    // it does not start a drag.
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      setPlaying(false);
+      setGuides({ x: null, y: null });
+      if (multiSelection.includes(id)) {
+        const next = multiSelection.filter((value) => value !== id);
+        setMultiSelection(next);
+        onSelectElement?.(next.length ? next[next.length - 1]! : null);
+      } else {
+        setMultiSelection((prev) => [...prev, id]);
+        onSelectElement?.(id);
+      }
+      return;
+    }
+
     onSelectElement?.(id);
+    setMultiSelection([id]);
     setPlaying(false);
     setGuides({ x: null, y: null });
 
@@ -4534,6 +7327,9 @@ function StudioWorkspace({
         "translateY",
         Math.round(drag.initY + (screenDy + snapDy) * drag.unitsPerPx),
       );
+      
+      // Update selection box in real-time during drag
+      measureSelection();
     };
     const onUp = () => {
       dragTargetRef.current = null;
@@ -4547,7 +7343,7 @@ function StudioWorkspace({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [zoom, time]);
+  }, [zoom, time, measureSelection]);
 
   // Resizing a selection from one of its four corner handles. Scaling is
   // applied through the `scale` track, anchored on the opposite corner via a
@@ -4628,6 +7424,9 @@ function StudioWorkspace({
         Math.round(scale0 * ratio * 1000) / 1000,
       );
       setGuides({ x: null, y: null });
+      
+      // Update selection box in real-time during resize
+      measureSelection();
     };
     const onUp = () => {
       resizeRef.current = null;
@@ -4640,7 +7439,7 @@ function StudioWorkspace({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [time, zoom]);
+  }, [time, zoom, measureSelection]);
 
   // Panning workspace
   const panStartRef = useRef<{
@@ -4651,6 +7450,7 @@ function StudioWorkspace({
   } | null>(null);
 
   const handleWorkspacePointerDown = (e: React.PointerEvent) => {
+    if (tool === "pen") return;
     if (effectiveTool === "hand" || e.button === 1 || isSpacePressed) {
       e.preventDefault();
       panStartRef.current = {
@@ -4711,12 +7511,22 @@ function StudioWorkspace({
       setZoom((z) =>
         Math.min(4, Math.max(0.2, Math.round((z + zoomFactor) * 100) / 100)),
       );
-    } else if (effectiveTool === "hand" || e.shiftKey) {
+      return;
+    }
+    if (effectiveTool === "hand" || e.shiftKey) {
+      e.preventDefault();
       setPan((p) => ({
         x: Math.round(p.x - e.deltaX),
         y: Math.round(p.y - e.deltaY),
       }));
+      return;
     }
+    // Plain wheel scrolls to zoom in/out.
+    e.preventDefault();
+    const zoomFactor = -e.deltaY * 0.0015;
+    setZoom((z) =>
+      Math.min(4, Math.max(0.2, Math.round((z + zoomFactor) * 100) / 100)),
+    );
   };
 
   const selected =
@@ -4753,10 +7563,73 @@ function StudioWorkspace({
         redo();
         return;
       }
+      if (e.code === "KeyD" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        handleDuplicate();
+        return;
+      }
+      if (e.code === "KeyG" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        if (e.shiftKey) ungroupCanvasSelection();
+        else groupCanvasSelection();
+        return;
+      }
+      if (e.code === "KeyH" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
+        e.preventDefault();
+        flipCanvasSelection("x");
+        return;
+      }
+      if (e.code === "KeyV" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
+        e.preventDefault();
+        flipCanvasSelection("y");
+        return;
+      }
+      if (e.code === "KeyF" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        centreCanvasSelection();
+        return;
+      }
+      if (e.code === "Quote" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setShowGrid(v => !v);
+        return;
+      }
+      if (e.code === "Semicolon" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
+        e.preventDefault();
+        setSnapToGrid(v => !v);
+        return;
+      }
+      if (e.code === "KeyP") {
+        setTool("pen");
+        return;
+      }
+      if (tool === "pen") {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finishPen(false);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelPen();
+          return;
+        }
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          setPenPoints((prev) => prev.slice(0, -1));
+          return;
+        }
+      }
       if (e.code === "KeyV") {
-        setTool("select");
+        setTool("transform");
       } else if (e.code === "KeyH") {
         setTool("hand");
+      } else if (e.code === "KeyN") {
+        setTool("node");
+      } else if (e.code === "KeyR") {
+        // R used to switch to the old Resize tool; it now just selects
+        // Select & Move, which carries the resize handles.
+        setTool("transform");
       } else if (e.code === "Space") {
         // Let a focused button handle Space natively so playback isn't toggled twice.
         if (target?.tagName === "BUTTON") return;
@@ -4807,12 +7680,13 @@ function StudioWorkspace({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [selection, loop, playing, undo, redo]);
+  }, [selection, loop, playing, undo, redo, groupCanvasSelection, ungroupCanvasSelection, flipCanvasSelection, centreCanvasSelection]);
 
-  const handleExport = (format: ExportFormat) => {
+  const handleExport = (format: ExportFormat, options?: ExportRenderOptions) => {
     const result = runExport(
       { ...animation, title, tracks, duration, loop },
       format,
+      options,
     );
     const blob = new Blob([result.content], { type: result.mime });
     const url = URL.createObjectURL(blob);
@@ -4824,79 +7698,290 @@ function StudioWorkspace({
     toast.success(`Exported ${result.filename}`);
   };
 
-  const canvasCursor =
-    effectiveTool === "hand"
-      ? isPanning
-        ? "grabbing"
-        : "grab"
-      : "default";
+  // Custom cursor styles - only for precision tools
+  const toolCursorStyle = effectiveTool === "pen" 
+    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M15 2 L18 5 L8 15 L5 15 L5 12 Z M13 4 L16 7' fill='%23fff' stroke='%232391FF' stroke-width='1.5' stroke-linejoin='round'/%3E%3Ccircle cx='5.5' cy='14.5' r='1' fill='%232391FF'/%3E%3C/svg%3E") 2 18, crosshair`
+    : effectiveTool === "node"
+    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='9' fill='none' stroke='%23ffffff' stroke-width='3' opacity='0.9'/%3E%3Ccircle cx='14' cy='14' r='9' fill='none' stroke='%232391FF' stroke-width='1.5'/%3E%3Cline x1='14' y1='1' x2='14' y2='7' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='14' y1='21' x2='14' y2='27' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='1' y1='14' x2='7' y2='14' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='21' y1='14' x2='27' y2='14' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='14' cy='14' r='2.5' fill='%232391FF' stroke='%23ffffff' stroke-width='1'/%3E%3C/svg%3E") 14 14, crosshair`
+    : effectiveTool === "hand"
+    ? isPanning ? "grabbing" : "grab"
+    : "default";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <StudioTopBar
         center={
-          <div className="flex h-7 items-center gap-0.5 rounded-lg border border-border/80 bg-muted/30 p-0.5">
+          <div className="flex h-8 items-center gap-2">
             <button
               type="button"
-              onClick={() => setTool("select")}
-              className={`grid size-6 place-items-center rounded-[5px] transition-colors ${
-                effectiveTool === "select"
-                  ? "bg-[#2391FF] text-white shadow-sm"
-                  : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+              onClick={() => setTool("transform")}
+              className={`relative group grid size-8 place-items-center transition-colors ${
+                effectiveTool === "transform"
+                  ? "text-[#2391FF]"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
-              title="Select & Move tool (V)"
-              aria-label="Select & Move tool"
-              aria-pressed={effectiveTool === "select"}
+              aria-label="Select, Move & Resize tool"
+              aria-pressed={effectiveTool === "transform"}
             >
-              <IconPointer className="size-3.5" />
+              {/* No fill: filling an outline icon turns it into a solid blob. */}
+              <MousePointer2 className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Select</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTool("node")}
+              className={`relative group grid size-8 place-items-center rounded-md transition-colors ${
+                effectiveTool === "node"
+                  ? "bg-[#2391FF]/10 text-[#2391FF]"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+              aria-label="Node tool"
+              aria-pressed={effectiveTool === "node"}
+            >
+              {/* No fill: Anchor is a stroke icon, filling it turned it into a solid blob. */}
+              <Anchor className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Node</span>
             </button>
             <button
               type="button"
               onClick={() => setTool("hand")}
-              className={`grid size-6 place-items-center rounded-[5px] transition-colors ${
+              className={`relative group grid size-8 place-items-center transition-colors ${
                 effectiveTool === "hand"
-                  ? "bg-[#2391FF] text-white shadow-sm"
-                  : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+                  ? "text-[#2391FF]"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
-              title="Hand / Pan tool (H or hold Space)"
               aria-label="Hand / Pan tool"
               aria-pressed={effectiveTool === "hand"}
             >
-              <IconHandMove className="size-3.5" />
+              <Hand className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Hand</span>
             </button>
 
-            <span aria-hidden="true" className="mx-1 h-3.5 w-px bg-border" />
+            <span aria-hidden="true" className="mx-2 h-5 w-px bg-border" />
+
+            {/* Add shape dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
+                  aria-label="Add shape"
+                  disabled={!onAddElement}
+                >
+                  <IconTriangleSquareCircle className="size-5" strokeWidth={2.25} />
+                  <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Add shape</span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-48">
+                <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Add Shape
+                </div>
+                <DropdownMenuItem onClick={() => onAddElement?.("rect")}>
+                  <IconSquareFilled className="mr-2 size-4 text-emerald-500" />
+                  <span>Rectangle</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("roundRect")}>
+                  <IconRectangleFilled className="mr-2 size-4 text-emerald-500" />
+                  <span>Rounded rectangle</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("circle")}>
+                  <IconCircleFilled className="mr-2 size-4 text-violet-500" />
+                  <span>Circle</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("ellipse")}>
+                  <IconOvalFilled className="mr-2 size-4 text-violet-500" />
+                  <span>Ellipse</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("triangle")}>
+                  <IconTriangleFilled className="mr-2 size-4 text-amber-500" />
+                  <span>Triangle</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("star")}>
+                  <IconStarFilled className="mr-2 size-4 text-yellow-500" />
+                  <span>Star</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("line")}>
+                  <IconLine className="mr-2 size-4 text-indigo-500" />
+                  <span>Line</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("text")}>
+                  <IconLetterT className="mr-2 size-4 text-rose-500" />
+                  <span>Text</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAddElement?.("g")}>
+                  <IconFolderFilled className="mr-2 size-4 text-amber-500" />
+                  <span>New group</span>
+                </DropdownMenuItem>
+                <div className="my-1 h-px bg-border" />
+                <DropdownMenuItem onClick={() => setTool("pen")}>
+                  <IconPencilFilled className="mr-2 size-4 text-primary" />
+                  <span>Draw with pen</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Align tools dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  aria-label="Align tools"
+                  disabled={multiSelection.length < 2}
+                >
+                  <IconFocusCentered className="size-5" strokeWidth={2.25} />
+                  <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Align</span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-48">
+                <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Align
+                </div>
+                <DropdownMenuItem onClick={() => handleAlign("left")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">←|</span>
+                  <span>Align Left</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleAlign("center-h")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">|·|</span>
+                  <span>Align Center</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleAlign("right")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">|→</span>
+                  <span>Align Right</span>
+                </DropdownMenuItem>
+                <div className="my-1 h-px bg-border" />
+                <DropdownMenuItem onClick={() => handleAlign("top")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">↑¯</span>
+                  <span>Align Top</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleAlign("middle")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">⎯·⎯</span>
+                  <span>Align Middle</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleAlign("bottom")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">_↓</span>
+                  <span>Align Bottom</span>
+                </DropdownMenuItem>
+                <div className="my-1 h-px bg-border" />
+                <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Distribute
+                </div>
+                <DropdownMenuItem onClick={() => handleDistribute("horizontal")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">⟷</span>
+                  <span>Horizontal</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleDistribute("vertical")}>
+                  <span className="mr-2 inline-flex size-4 items-center justify-center text-[10px]">⇅</span>
+                  <span>Vertical</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <span aria-hidden="true" className="mx-2 h-5 w-px bg-border" />
+
+            {/* Grid toggle */}
+            <button
+              type="button"
+              onClick={() => setShowGrid(!showGrid)}
+              className={`relative group grid size-8 place-items-center transition-colors ${
+                showGrid
+                  ? "text-[#2391FF]"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              aria-label="Toggle grid"
+              aria-pressed={showGrid}
+            >
+              <Grid2x2 className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Grid</span>
+            </button>
+
+            {/* Snap to grid toggle */}
+            {showGrid ? (
+              <button
+                type="button"
+                onClick={() => setSnapToGrid(!snapToGrid)}
+                className={`relative group grid size-6 place-items-center rounded transition-colors ${
+                  snapToGrid
+                    ? "bg-[#2391FF]/20 text-[#2391FF]"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+                aria-label="Snap to grid"
+                aria-pressed={snapToGrid}
+              >
+                <IconLinkFilled className="size-4" />
+                <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Snap grid</span>
+              </button>
+            ) : null}
+
+            {/* Grid size dropdown */}
+            {showGrid ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="relative group h-6 rounded-[5px] bg-muted px-2 text-[10px] font-medium transition-colors hover:bg-muted/80"
+                  >
+                    {gridSize}px
+                    <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Grid size</span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuRadioGroup value={String(gridSize)} onValueChange={(v) => setGridSize(Number(v))}>
+                    <DropdownMenuRadioItem value="10">10px</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="20">20px</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="50">50px</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="100">100px</DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+
+            {/* Pen tool toggle */}
+            <button
+              type="button"
+              onClick={() => setTool(tool === "pen" ? "transform" : "pen")}
+              className={`relative group grid size-8 place-items-center transition-colors ${
+                effectiveTool === "pen"
+                  ? "text-[#2391FF]"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              aria-label="Pen tool"
+              aria-pressed={effectiveTool === "pen"}
+            >
+              <PenTool className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Pen</span>
+            </button>
 
             {/* Aspect Ratio Controls */}
             <AspectRatioControl animation={animation} onSave={onSave} />
 
-            {/* Artboard background: white or transparent checkerboard */}
-            <button
-              type="button"
-              onClick={() =>
-                setArtboardBackground((bg) => (bg === "white" ? "checker" : "white"))
-              }
-              className="grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
-              title={`Artboard background: ${
-                artboardBackground === "white" ? "White" : "Transparent"
-              } (click to switch)`}
-              aria-label="Toggle artboard background"
-            >
-              <span
-                className="size-3.5 rounded-[3px] border border-border"
-                style={
-                  artboardBackground === "white"
-                    ? { background: "#ffffff" }
-                    : {
-                        backgroundImage:
-                          "repeating-conic-gradient(#c9c9c9 0% 25%, #ffffff 0% 50%)",
-                        backgroundSize: "6px 6px",
-                      }
+            {/* Artboard background: white, checker, or custom color */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setArtboardBackground((bg) =>
+                    bg === "checker" ? "white" : "checker",
+                  )
                 }
+                className="relative group grid size-8 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                aria-label="Toggle artboard background"
+              >
+                <Grid2x2 className="size-5" strokeWidth={2.5} />
+                <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Background</span>
+              </button>
+              <ColorPicker
+                variant="swatch"
+                label="Background color"
+                value={artboardBgColor}
+                onChange={(v) => {
+                  setArtboardBgColor(v);
+                  setArtboardBackground("custom");
+                }}
               />
-            </button>
+            </div>
 
-            <span aria-hidden="true" className="mx-1 h-3.5 w-px bg-border" />
+            <span aria-hidden="true" className="mx-2 h-5 w-px bg-border" />
 
             {/* Zoom Controls */}
             <button
@@ -4906,10 +7991,11 @@ function StudioWorkspace({
                   Math.max(0.2, Math.round((z - 0.25) * 100) / 100),
                 )
               }
-              className="grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
-              title="Zoom out (Ctrl -)"
+              className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
+              aria-label="Zoom out"
             >
-              <IconZoomOut className="size-3.5" />
+              <IconZoomOut className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Zoom out</span>
             </button>
             <button
               type="button"
@@ -4918,10 +8004,11 @@ function StudioWorkspace({
                   Math.min(4, Math.round((z + 0.25) * 100) / 100),
                 )
               }
-              className="grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
-              title="Zoom in (Ctrl +)"
+              className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
+              aria-label="Zoom in"
             >
-              <IconZoomIn className="size-3.5" />
+              <IconZoomIn className="size-5" strokeWidth={2.5} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Zoom in</span>
             </button>
             <button
               type="button"
@@ -4929,44 +8016,26 @@ function StudioWorkspace({
                 setZoom(1);
                 setPan({ x: 0, y: 0 });
               }}
-              className="grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
-              title={`Reset zoom & center view (currently ${Math.round(zoom * 100)}%)`}
+              className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
               aria-label="Reset zoom and center view"
             >
-              <IconMaximize className="size-3.5" />
+              <IconFocusCentered className="size-5" strokeWidth={2.25} />
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Reset view</span>
             </button>
           </div>
         }
         right={
           <>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  className="h-7 gap-1.5 text-[11px] bg-[#2391FF] text-white hover:bg-[#1f7fe0]"
-                >
-                  <IconDownload className="size-3.5" />
-                  Export
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuItem onClick={() => setExportDialogOpen(true)}>
-                  SVG for Web (options…)
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport("svg")}>
-                  SVG (animated)
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport("webcss")}>
-                  Web (CSS/HTML)
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport("js")}>
-                  JavaScript
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport("lottie")}>
-                  Lottie JSON
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Button size="sm" variant="outline" className="h-8 text-[12px]" onClick={animateAlongPath} title="Select an element, then Shift-click a path">Motion path</Button>
+            <Button size="sm" variant="outline" className="h-8 text-[12px]" onClick={() => void staggerCanvasSelection()} title="Stagger the selected elements' animations">Stagger</Button>
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 text-[12px] bg-[#2391FF] text-white hover:bg-[#1f7fe0]"
+              onClick={() => setExportDialogOpen(true)}
+            >
+              <IconDownloadFilled className="size-4" />
+              Export SVG
+            </Button>
           </>
         }
       />
@@ -4975,9 +8044,13 @@ function StudioWorkspace({
       <div
         ref={viewerRef}
         className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/30 select-none"
-        style={{ cursor: canvasCursor }}
+        style={{ cursor: toolCursorStyle }}
         onPointerDown={handleWorkspacePointerDown}
         onWheel={handleWheel}
+        onDragEnter={handleImageDragEnter}
+        onDragOver={handleImageDragOver}
+        onDragLeave={handleImageDragLeave}
+        onDrop={handleImageDrop}
       >
         {/* Dynamic canvas grid pattern */}
         <div
@@ -4989,6 +8062,15 @@ function StudioWorkspace({
             backgroundPosition: `${pan.x}px ${pan.y}px`,
           }}
         />
+
+        {isDraggingImage ? (
+          <div className="pointer-events-none absolute inset-3 z-30 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[#2391FF] bg-[#2391FF]/5 text-[#2391FF]">
+            <IconPhotoFilled className="size-7" />
+            <span className="text-[13px] font-medium">
+              Drop an image to add it as an element
+            </span>
+          </div>
+        ) : null}
 
         {/* Artboard Wrapper with Pan & Zoom transform */}
         <div
@@ -5002,19 +8084,33 @@ function StudioWorkspace({
           <div
             className="relative overflow-hidden border border-border bg-background shadow-md"
             style={
-              artboardBackground === "white"
-                ? { backgroundColor: "#ffffff" }
-                : {
+              artboardBackground === "checker"
+                ? {
                     backgroundColor: "#ffffff",
                     backgroundImage:
                       "repeating-conic-gradient(#e3e3e3 0% 25%, #ffffff 0% 50%)",
                     backgroundSize: "18px 18px",
                   }
+                : artboardBackground === "custom"
+                ? { backgroundColor: artboardBgColor }
+                : { backgroundColor: "#ffffff" }
             }
           >
             <div
               ref={stageRef}
               onPointerDown={handleStagePointerDown}
+              onPointerMove={(e) => {
+                if (tool !== "pen") return;
+                const svg = stageRef.current?.querySelector("svg");
+                if (!svg) return;
+                const pt = svg.createSVGPoint();
+                pt.x = e.clientX;
+                pt.y = e.clientY;
+                const ctm = svg.getScreenCTM();
+                const user = ctm ? pt.matrixTransform(ctm.inverse()) : null;
+                if (user) setPenHover({ x: user.x, y: user.y });
+              }}
+              onPointerLeave={() => setPenHover(null)}
               className="relative [&>svg]:block [&>svg]:h-auto [&>svg]:w-auto"
               dangerouslySetInnerHTML={{ 
                 __html: (() => {
@@ -5045,7 +8141,249 @@ function StudioWorkspace({
                 })()
               }}
             />
-            {/* Dynamic style for hidden, locked, and selected elements */}
+            {/* Grid overlay */}
+            {showGrid ? (
+              <svg
+                className="pointer-events-none absolute inset-0 z-10"
+                width="100%"
+                height="100%"
+                preserveAspectRatio="none"
+                viewBox={(() => {
+                  const vb = (animation.svg ?? "")
+                    .match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
+                  return vb
+                    ? `${vb[1]} ${vb[2]} ${vb[3]} ${vb[4]}`
+                    : "0 0 200 200";
+                })()}
+              >
+                <defs>
+                  <pattern
+                    id="grid-pattern"
+                    x="0"
+                    y="0"
+                    width={gridSize}
+                    height={gridSize}
+                    patternUnits="userSpaceOnUse"
+                  >
+                    <path
+                      d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`}
+                      fill="none"
+                      stroke="#2391FF"
+                      strokeWidth="0.5"
+                      opacity="0.3"
+                    />
+                  </pattern>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#grid-pattern)" />
+              </svg>
+            ) : null}
+            {tool === "pen" ? (
+              <svg
+                className="pointer-events-none absolute inset-0 z-20"
+                width="100%"
+                height="100%"
+                preserveAspectRatio="none"
+                viewBox={(() => {
+                  const vb = (animation.svg ?? "")
+                    .match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
+                  return vb
+                    ? `${vb[1]} ${vb[2]} ${vb[3]} ${vb[4]}`
+                    : "0 0 200 200";
+                })()}
+              >
+                {penPoints.length > 0 ? (
+                  <path
+                    d={penPathD(penPoints, false)}
+                    fill="none"
+                    stroke="#2391FF"
+                    stroke-width="3"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    opacity="0.85"
+                  />
+                ) : null}
+                {penPoints.flatMap((p, i) => {
+                  const els: React.ReactNode[] = [];
+                  if (p.outX !== undefined && p.outY !== undefined) {
+                    els.push(<line key={`o${i}`} x1={p.x} y1={p.y} x2={p.outX} y2={p.outY} stroke="#2391FF" stroke-width="1" opacity="0.7" />);
+                    els.push(<rect key={`od${i}`} x={p.outX - 3} y={p.outY - 3} width="6" height="6" transform={`rotate(45 ${p.outX} ${p.outY})`} fill="#2391FF" stroke="#ffffff" stroke-width="1" />);
+                  }
+                  if (p.inX !== undefined && p.inY !== undefined) {
+                    els.push(<line key={`i${i}`} x1={p.x} y1={p.y} x2={p.inX} y2={p.inY} stroke="#2391FF" stroke-width="1" opacity="0.7" />);
+                    els.push(<rect key={`id${i}`} x={p.inX - 3} y={p.inY - 3} width="6" height="6" transform={`rotate(45 ${p.inX} ${p.inY})`} fill="#2391FF" stroke="#ffffff" stroke-width="1" />);
+                  }
+                  return els;
+                })}
+                {penPoints.map((p, i) => (
+                  <circle
+                    key={i}
+                    cx={p.x}
+                    cy={p.y}
+                    r={i === 0 ? 5 : 3}
+                    fill={i === 0 ? "#2391FF" : "#ffffff"}
+                    stroke="#2391FF"
+                    stroke-width="2"
+                  />
+                ))}
+                {penHover && penPoints.length > 0 ? (
+                  <line
+                    x1={penPoints[penPoints.length - 1]!.x}
+                    y1={penPoints[penPoints.length - 1]!.y}
+                    x2={penHover.x}
+                    y2={penHover.y}
+                    stroke="#2391FF"
+                    stroke-width="2"
+                    stroke-dasharray="4 3"
+                    opacity="0.6"
+                  />
+                ) : null}
+                {penHover && penPoints.length === 0 ? (
+                  <circle
+                    cx={penHover.x}
+                    cy={penHover.y}
+                    r="3"
+                    fill="#2391FF"
+                    opacity="0.7"
+                  />
+                ) : null}
+              </svg>
+            ) : null}
+            {penPoints.length > 0 ? (
+              <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 rounded-md bg-foreground/85 px-2 py-1 text-[11px] text-background shadow">
+                {penPoints.length} point{penPoints.length === 1 ? "" : "s"} · click to add, drag for a curve · click first dot to close · Enter to finish · Esc to cancel
+              </div>
+            ) : null}
+            {tool === "node" && nodePoints.length > 0 ? (
+              <svg
+                className="pointer-events-none absolute inset-0 z-20"
+                width="100%"
+                height="100%"
+                preserveAspectRatio="none"
+                viewBox={(() => {
+                  const vb = (animation.svg ?? "")
+                    .match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
+                  return vb
+                    ? `${vb[1]} ${vb[2]} ${vb[3]} ${vb[4]}`
+                    : "0 0 200 200";
+                })()}
+              >
+                {nodeBezier ? (
+                  nodeBezier.lines.map((l, li) => (
+                    <line
+                      key={li}
+                      x1={l.x1}
+                      y1={l.y1}
+                      x2={l.x2}
+                      y2={l.y2}
+                      stroke="#2391FF"
+                      stroke-width="1"
+                      opacity="0.7"
+                    />
+                  ))
+                ) : (
+                  <polyline
+                    points={nodePoints.map((p) => `${p.x},${p.y}`).join(" ")}
+                    fill="none"
+                    stroke="#2391FF"
+                    stroke-width="1.5"
+                    stroke-dasharray="4 3"
+                    opacity="0.6"
+                  />
+                )}
+                {nodePoints.map((p, i) => (
+                  <g key={i}>
+                    {/* Invisible, larger grab area so the small visible dot stays easy to grab. */}
+                    <circle
+                      cx={p.x}
+                      cy={p.y}
+                      r="10"
+                      fill="transparent"
+                      className="pointer-events-auto cursor-grab"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        const svg = stageRef.current?.querySelector("svg");
+                        const ctm = svg?.getScreenCTM();
+                        const unitsPerPx = ctm && ctm.a ? 1 / ctm.a : 1;
+                        // Smooth anchor: dragging one handle mirrors the opposite.
+                        let mirror: { anchorIndex: number; oppositeIndex: number } | null = null;
+                        if (nodeBezier && nodeBezier.controlIndices.has(i)) {
+                          const anchorIndex = nodeBezier.anchorOfControl.get(i);
+                          const oppositeIndex = nodeBezier.opposite.get(i);
+                          if (anchorIndex !== undefined && oppositeIndex !== undefined && nodeSmooth.has(anchorIndex)) {
+                            mirror = { anchorIndex, oppositeIndex };
+                          }
+                        }
+                        nodeDragRef.current = {
+                          index: i,
+                          startX: e.clientX,
+                          startY: e.clientY,
+                          initX: p.x,
+                          initY: p.y,
+                          initPoints: nodePoints,
+                          unitsPerPx,
+                          mirror,
+                        };
+                        setPlaying(false);
+                      }}
+                      onDoubleClick={(e) => {
+                        // Double-click an anchor with both C handles to toggle
+                        // smooth (mirrored) vs corner (independent) handles.
+                        e.stopPropagation();
+                        if (!nodeBezier || nodeBezier.controlIndices.has(i)) return;
+                        if (!nodeBezier.smoothCandidates.has(i)) return;
+                        const nextSmooth = new Set(nodeSmooth);
+                        let nextPoints = nodePoints;
+                        if (nextSmooth.has(i)) {
+                          nextSmooth.delete(i);
+                        } else {
+                          nextSmooth.add(i);
+                          // Mirror the outgoing handle around the anchor at once,
+                          // so the curve visibly becomes smooth, not just on the next drag.
+                          const anchor = nodePoints[i];
+                          const inIdx = nodeBezier.controlIndices.has(i - 1) && nodeBezier.anchorOfControl.get(i - 1) === i ? i - 1 : undefined;
+                          const outIdx = nodeBezier.controlIndices.has(i + 1) && nodeBezier.anchorOfControl.get(i + 1) === i ? i + 1 : undefined;
+                          const inPt = inIdx !== undefined ? nodePoints[inIdx] : undefined;
+                          if (anchor && inPt && outIdx !== undefined) {
+                            nextPoints = nodePoints.map((pt, pi) =>
+                              pi === outIdx ? { x: 2 * anchor.x - inPt.x, y: 2 * anchor.y - inPt.y } : pt,
+                            );
+                          }
+                        }
+                        setNodeSmooth(nextSmooth);
+                        if (nextPoints !== nodePoints) {
+                          setNodePoints(nextPoints);
+                          commitNodePoints(nextPoints, nodeClosed);
+                        }
+                      }}
+                    />
+                    {nodeBezier?.controlIndices.has(i) ? (
+                      <rect
+                        x={p.x - 3.5}
+                        y={p.y - 3.5}
+                        width="7"
+                        height="7"
+                        transform={`rotate(45 ${p.x} ${p.y})`}
+                        fill="#2391FF"
+                        stroke="#ffffff"
+                        stroke-width="1"
+                        className="pointer-events-none"
+                      />
+                    ) : (
+                      <circle
+                        cx={p.x}
+                        cy={p.y}
+                        r="3"
+                        fill={i === 0 || nodeSmooth.has(i) ? "#2391FF" : "#ffffff"}
+                        stroke="#2391FF"
+                        stroke-width="1.5"
+                        className="pointer-events-none"
+                      />
+                    )}
+                  </g>
+                ))}
+              </svg>
+            ) : null}
             <style>{`
               ${Array.from(hiddenIds ?? [])
                 .map((id) => `#${CSS.escape(id)} { display: none !important; }`)
@@ -5057,11 +8395,11 @@ function StudioWorkspace({
                 )
                 .join("\n")}
               ${
-                effectiveTool === "select"
+                effectiveTool === "transform"
                   ? `
                 #stage svg [id]:not([data-locked="true"]),
                 div[class*="relative"] svg [id]:not([data-locked="true"]) {
-                  cursor: move !important;
+                  cursor: default !important;
                 }
               `
                   : ""
@@ -5085,7 +8423,8 @@ function StudioWorkspace({
         ) : null}
 
         {/* Selection frame: resize handles, center marker, live position */}
-        {selectionBox && effectiveTool === "select" ? (
+        {selectionBox &&
+        (effectiveTool === "transform" || effectiveTool === "node") ? (
           <div
             className="pointer-events-none absolute z-20"
             style={{
@@ -5107,17 +8446,19 @@ function StudioWorkspace({
               <div className="size-2 rounded-full border border-white bg-[#2391FF] shadow-sm" />
             </div>
 
-            {RESIZE_CORNERS.map(({ corner, cursor, left, top }) => (
-              <button
-                key={corner}
-                type="button"
-                onPointerDown={startResize(corner)}
-                className="pointer-events-auto absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-[#2391FF] shadow-md transition-transform hover:scale-125"
-                style={{ left, top, cursor }}
-                title={`Resize from ${corner} corner (keeps aspect ratio)`}
-                aria-label={`Resize from ${corner} corner`}
-              />
-            ))}
+            {effectiveTool === "transform"
+              ? RESIZE_CORNERS.map(({ corner, cursor, left, top }) => (
+                  <button
+                    key={corner}
+                    type="button"
+                    onPointerDown={startResize(corner)}
+                    className="pointer-events-auto absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-[#2391FF] shadow-md transition-transform hover:scale-125"
+                    style={{ left, top, cursor }}
+                    title={`Resize from ${corner} corner (keeps aspect ratio)`}
+                    aria-label={`Resize from ${corner} corner`}
+                  />
+                ))
+              : null}
           </div>
         ) : null}
 
@@ -5125,12 +8466,16 @@ function StudioWorkspace({
           <KeyframeInspector
             track={selected.track}
             keyframe={selected.keyframe}
+            time={time}
             onChange={(patch) =>
               updateKeyframe(
                 selected.selection.track,
                 selected.selection.keyframe,
                 patch,
               )
+            }
+            onTrackKeyframeChange={(kfIndex, patch) =>
+              updateKeyframe(selected.selection.track, kfIndex, patch)
             }
             onDelete={() => {
               removeKeyframe(
@@ -5167,11 +8512,96 @@ function StudioWorkspace({
         open={exportDialogOpen}
         svg={animation.svg ?? ""}
         title={title ?? ""}
+        duration={duration}
+        tracks={tracks}
+        loop={loop}
         onClose={() => setExportDialogOpen(false)}
-        onExport={(format) => {
-          handleExport(format);
+        onExport={(format, options) => {
+          handleExport(format, options);
         }}
       />
+      {imagePromptDialog}
+    </div>
+  );
+}
+
+function GraphEditor({
+  track,
+  time,
+  onKeyframeChange,
+}: {
+  track: Track;
+  time?: number;
+  onKeyframeChange: (kfIndex: number, patch: { t?: number; v?: number }) => void;
+}) {
+  const W = 240;
+  const H = 120;
+  const PAD = 12;
+  const numeric = track.keyframes.filter((k) => typeof k.v === "number") as Array<{ t: number; v: number; ease?: string }>;
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dragRef = useRef<{ index: number; min: number; max: number } | null>(null);
+  if (numeric.length < 2) {
+    return <p className="text-[11px] text-muted-foreground">Add at least two numeric keyframes to see the curve.</p>;
+  }
+  const values = numeric.map((k) => k.v);
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.15;
+  min -= pad;
+  max += pad;
+  const x = (t: number) => PAD + t * (W - PAD * 2);
+  const y = (v: number) => PAD + (1 - (v - min) / (max - min)) * (H - PAD * 2);
+  // Sampled curve, so easing shapes (not just straight lines between
+  // diamonds) are visible in the graph.
+  const curve: string[] = [];
+  for (let i = 0; i <= 60; i++) {
+    const t = i / 60;
+    const v = sampleTrack(track, t);
+    if (typeof v !== "number") continue;
+    curve.push(`${i === 0 ? "M" : "L"} ${x(t).toFixed(1)} ${y(v).toFixed(1)}`);
+  }
+  const startDrag = (e: React.PointerEvent, kfIndex: number) => {
+    e.preventDefault();
+    dragRef.current = { index: kfIndex, min, max };
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const move = (ev: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const t = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+      const v = drag.min + (1 - (ev.clientY - rect.top) / rect.height) * (drag.max - drag.min);
+      onKeyframeChange(drag.index, { t, v: Math.round(v * 100) / 100 });
+    };
+    const up = () => {
+      dragRef.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+  return (
+    <div>
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full rounded-md border border-border bg-muted/30">
+        <path d={curve.join(" ")} fill="none" stroke="#2391FF" strokeWidth="2" />
+        {time !== undefined ? (
+          <line x1={x(time)} y1={0} x2={x(time)} y2={H} stroke="#2391FF" strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
+        ) : null}
+        {track.keyframes.map((k, i) => {
+          if (typeof k.v !== "number") return null;
+          return (
+            <g key={i}>
+              <circle cx={x(k.t)} cy={y(k.v)} r="9" fill="transparent" className="cursor-grab" onPointerDown={(e) => startDrag(e, i)} />
+              <circle cx={x(k.t)} cy={y(k.v)} r="4" fill="#ffffff" stroke="#2391FF" strokeWidth="1.5" className="pointer-events-none" />
+            </g>
+          );
+        })}
+      </svg>
+      <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Drag a diamond to change its time (horizontal) and value (vertical). The curve shows the easing between keyframes.</p>
     </div>
   );
 }
@@ -5179,13 +8609,17 @@ function StudioWorkspace({
 function KeyframeInspector({
   track,
   keyframe,
+  time,
   onChange,
+  onTrackKeyframeChange,
   onDelete,
   onClose,
 }: {
   track: Track;
   keyframe: { t: number; v: number | string; ease?: string };
+  time?: number;
   onChange: (patch: { t?: number; v?: number | string; ease?: string }) => void;
+  onTrackKeyframeChange?: (kfIndex: number, patch: { t?: number; v?: number }) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -5300,11 +8734,20 @@ function KeyframeInspector({
           </Select>
         </label>
 
+        <div>
+          <span className="mb-1 block text-[10px] font-medium text-muted-foreground">Graph</span>
+          {onTrackKeyframeChange ? (
+            <GraphEditor track={track} time={time} onKeyframeChange={onTrackKeyframeChange} />
+          ) : (
+            <p className="text-[11px] text-muted-foreground">Graph editing is unavailable for this track.</p>
+          )}
+        </div>
+
         <button
           onClick={onDelete}
           className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
         >
-          <IconTrash className="size-3" />
+          <IconTrashFilled className="size-3" />
           Delete keyframe
         </button>
       </div>
@@ -5574,32 +9017,32 @@ function Timeline({
 
       {/* Transport — one row for playback, timing, duration and looping */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 bg-[#222] px-3">
-        <div className="flex items-center gap-0.5 rounded-md bg-[#2c2c2c] p-0.5">
+        <div className="flex items-center gap-1 rounded-full bg-[#2c2c2c] p-1 shadow-inner">
           <button
             type="button"
             onClick={() => onScrub(0)}
-            className="grid size-7 place-items-center rounded text-muted-foreground transition-colors hover:bg-[#3a3a3a] hover:text-foreground"
-            title="Back to start"
+            className="relative group grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
             aria-label="Back to start"
           >
-            <IconPlayerSkipBack className="size-3.5" />
+            <IconPlayerSkipBackFilled className="size-3.5" />
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Start</span>
           </button>
           <button
             type="button"
             onClick={onTogglePlay}
-            className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
-            title={playing ? "Pause (Space)" : "Play (Space)"}
+            className="relative group grid size-8 place-items-center rounded-full bg-[#2391FF] text-white shadow-md shadow-[#2391FF]/40 transition-all hover:scale-105 hover:bg-[#1f7fe0] active:scale-95"
             aria-label={playing ? "Pause" : "Play"}
           >
             {playing ? (
-              <IconPlayerPauseFilled className="size-3.5" />
+              <IconPlayerPauseFilled className="size-4" />
             ) : (
-              <IconPlayerPlayFilled className="size-3.5" />
+              <IconPlayerPlayFilled className="size-4" />
             )}
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">{playing ? "Pause" : "Play"}</span>
           </button>
         </div>
 
-        <div className="flex items-baseline gap-1 rounded-md bg-[#2c2c2c] px-2 py-1 text-[11px] tabular-nums">
+        <div className="flex items-baseline gap-1 rounded-full bg-[#2c2c2c] px-2.5 py-1 text-[11px] tabular-nums shadow-inner">
           <span className="font-mono text-foreground">
             {formatSeconds(currentSeconds)}
           </span>
@@ -5634,16 +9077,16 @@ function Timeline({
           <button
             type="button"
             onClick={onToggleLoop}
-            className={`grid size-7 place-items-center rounded-md transition-colors ${
+            className={`relative group grid size-8 place-items-center rounded-full transition-all hover:scale-105 active:scale-95 ${
               loop
-                ? "bg-primary/20 text-primary"
-                : "text-muted-foreground hover:bg-[#3a3a3a] hover:text-foreground"
+                ? "bg-primary/20 text-primary shadow-sm shadow-primary/20"
+                : "text-muted-foreground hover:bg-white/10 hover:text-foreground"
             }`}
-            title={loop ? "Looping" : "Play once"}
             aria-label={loop ? "Disable looping" : "Enable looping"}
             aria-pressed={loop}
           >
-            <IconRepeat className="size-3.5" />
+            <IconRepeat className="size-4" />
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Loop</span>
           </button>
         </div>
       </div>
@@ -5695,16 +9138,19 @@ function Timeline({
                   );
                 })}
                 <div
-                  className="pointer-events-none absolute inset-y-0 z-10 w-px bg-primary"
+                  className="pointer-events-none absolute inset-y-0 z-10 w-0.5 -translate-x-1/2 bg-primary shadow-[0_0_10px_1px_rgba(35,145,255,0.6)]"
                   style={{ left: `${time * 100}%` }}
                 />
                 {/* Grabbable playhead head — drag it to move the frame */}
                 <div
-                  className="group absolute top-0 z-20 -translate-x-1/2 cursor-grab px-2 pb-1.5 pt-0.5 active:cursor-grabbing"
+                  className="group absolute top-0 z-20 -translate-x-1/2 cursor-grab px-3 pb-1.5 pt-0.5 active:cursor-grabbing"
                   style={{ left: `${time * 100}%` }}
                   title={`Playhead · ${formatSeconds(currentSeconds)}`}
                 >
-                  <div className="size-0 origin-top border-x-[6px] border-t-[9px] border-x-transparent border-t-primary transition-transform group-hover:scale-125" />
+                  <div
+                    className="size-0 origin-top border-x-[7px] border-t-[11px] border-x-transparent border-t-primary transition-transform group-hover:scale-125"
+                    style={{ filter: "drop-shadow(0 1px 2px rgb(0 0 0 / 0.5))" }}
+                  />
                 </div>
               </div>
             </div>
@@ -5773,7 +9219,7 @@ function Timeline({
               {/* Track rows */}
               <div className="relative min-w-0 flex-1">
                 <div
-                  className="pointer-events-none absolute inset-y-0 z-20 w-px bg-primary"
+                  className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-primary shadow-[0_0_10px_1px_rgba(35,145,255,0.6)]"
                   style={{ left: `${time * 100}%` }}
                 />
                 {Object.entries(groupedTracks).map(
@@ -5972,15 +9418,11 @@ function AspectRatioControl({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground data-[state=open]:bg-accent/70 data-[state=open]:text-foreground"
-          title={`Canvas ${dimensions.aspectRatio} · ${dimensions.width}×${dimensions.height} — change size`}
+          className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground data-[state=open]:bg-accent/70 data-[state=open]:text-foreground"
           aria-label={`Canvas size ${dimensions.aspectRatio}, ${dimensions.width} by ${dimensions.height}`}
         >
-          <CanvasRatioShape
-            width={dimensions.width}
-            height={dimensions.height}
-            max={15}
-          />
+          <Frame className="size-5" />
+          <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Canvas size</span>
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 p-2.5">

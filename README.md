@@ -1,33 +1,38 @@
-# Chat
+# SVG MOTION
 
-The minimal agent-native starter app — a clean, ChatGPT-style shell with chat at
-the center, durable threads, standard app navigation, auth, live sync, and
-actions. Start here when you want a real browser app to build on without
-committing to a domain template.
+An agent-native SVG animation studio where you describe motion and the agent creates it. Built on the Agent Native framework with real-time collaboration, durable state, and timeline-based animation editing.
 
-**Live app: [chat.agent-native.com](https://chat.agent-native.com?utm_source=github&utm_medium=referral&utm_content=chat-readme)**
-
-Chat is the basic agent-native app starting point. It gives you the app-agent
-loop wired end to end and one example action, so you can add your own UI, data,
-and actions on top.
+**SVG MOTION** transforms natural language descriptions into professional SVG animations. The agent draws the SVG and writes the keyframes — you shape the timing on the timeline.
 
 ## Features
 
-- ChatGPT-style shell with a threads list and durable chat history.
-- Auth, live sync, and application state wired out of the box.
-- The action surface the agent and UI share, plus one example action to copy.
-- A minimal, brandable base for any domain app.
+- 🎨 **AI-Powered Animation**: Describe any animation and watch the agent create it
+- ⏱️ **Timeline Editor**: Professional keyframe editing with easing controls
+- 🎯 **Precision Tools**: Transform, node editing, align, distribute, and snap-to-grid
+- 📐 **Drawing Tools**: Pen tool, shapes (rectangles, circles, stars), and text
+- 🖼️ **Image Support**: Drag-and-drop images with smart positioning
+- 🎬 **Layer Management**: Full layer control with bring to front/send to back
+- 📤 **SVG Export**: Export standalone animated SVG files
+- 🔄 **Real-time Sync**: Changes sync instantly across all sessions
+- 💾 **Auto-save**: All projects saved automatically
 
 ## Develop locally
 
 Scaffold your own copy and run it:
 
 ```bash
-npx --yes @agent-native/core@latest create my-app --standalone --template chat
-cd my-app
+npx --yes @agent-native/core@latest create my-svg-motion --standalone
+cd my-svg-motion
 corepack enable
 pnpm install
 pnpm dev
 ```
 
-Full docs: [agent-native.com/docs/template-chat](https://agent-native.com/docs/template-chat?utm_source=github&utm_medium=referral&utm_content=chat-readme).
+## Quick Start
+
+1. **Describe it**: Use the prompt composer to describe an animation
+2. **Watch it move**: The agent creates the SVG and animation tracks
+3. **Shape it**: Edit keyframes on the timeline to perfect your timing
+4. **Export it**: Download a standalone animated SVG file
+
+Full docs: [agent-native.com/docs](https://agent-native.com/docs?utm_source=github&utm_medium=referral)

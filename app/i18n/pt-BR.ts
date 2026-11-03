@@ -24,7 +24,7 @@ const messages = {
     heroDescription:
       "Peça ao agente para inspecionar, explicar ou alterar este app.",
     heroTitle: "Como posso ajudar?",
-    inspectEmptyState: "Pergunte-me qualquer coisa sobre este app",
+    inspectEmptyState: "Peça-me para editar ou adicionar algo",
     inspectSuggestionAction: "Mostrar ações disponíveis",
     inspectSuggestionCapabilities: "O que este app pode fazer?",
     inspectSuggestionHello: "Ajude-me a começar",

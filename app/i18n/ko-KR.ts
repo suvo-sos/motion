@@ -24,7 +24,7 @@ const messages = {
     heroDescription:
       "에이전트에게 이 앱을 살펴보고 설명하거나 변경하도록 요청하세요.",
     heroTitle: "무엇을 도와드릴까요?",
-    inspectEmptyState: "이 앱에 대해 무엇이든 물어보세요",
+    inspectEmptyState: "편집하거나 추가할 내용을 무엇이든 물어보세요",
     inspectSuggestionAction: "사용 가능한 작업 보기",
     inspectSuggestionCapabilities: "이 앱은 무엇을 할 수 있나요?",
     inspectSuggestionHello: "시작할 수 있게 도와주세요",

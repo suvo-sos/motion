@@ -380,6 +380,40 @@ function easeProgress(ease: string | undefined, p: number): number {
   return p;
 }
 
+type Rgba = { r: number; g: number; b: number; a: number };
+
+/** Parse a colour track value into channels, or null if it is not a colour. */
+function parseColor(value: unknown): Rgba | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim().toLowerCase();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s);
+  if (hex) {
+    const h = hex[1]!;
+    const expand = (c: string) => parseInt(c + c, 16);
+    if (h.length === 3) return { r: expand(h[0]!), g: expand(h[1]!), b: expand(h[2]!), a: 1 };
+    if (h.length === 4) return { r: expand(h[0]!), g: expand(h[1]!), b: expand(h[2]!), a: expand(h[3]!) / 255 };
+    if (h.length === 6) return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 1 };
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: parseInt(h.slice(6, 8), 16) / 255 };
+  }
+  const rgb = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(s);
+  if (rgb) {
+    return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]), a: rgb[4] === undefined ? 1 : Number(rgb[4]) };
+  }
+  return null;
+}
+
+function lerpColor(a: Rgba, b: Rgba, p: number): string {
+  const r = Math.round(a.r + (b.r - a.r) * p);
+  const g = Math.round(a.g + (b.g - a.g) * p);
+  const bl = Math.round(a.b + (b.b - a.b) * p);
+  const alpha = a.a + (b.a - a.a) * p;
+  if (alpha >= 1) {
+    const hex = (v: number) => v.toString(16).padStart(2, "0");
+    return `#${hex(r)}${hex(g)}${hex(bl)}`;
+  }
+  return `rgba(${r}, ${g}, ${bl}, ${Math.round(alpha * 100) / 100})`;
+}
+
 export function sampleTrack(track: Track, t: number): number | string {
   const kfs = [...track.keyframes].sort((a, b) => a.t - b.t);
   const first = kfs[0];
@@ -398,6 +432,11 @@ export function sampleTrack(track: Track, t: number): number | string {
       if (typeof a.v === "number" && typeof b.v === "number") {
         return a.v + (b.v - a.v) * p;
       }
+      // Colour values blend channel by channel instead of jumping at the
+      // midpoint, so an animated fill or stroke actually fades.
+      const ca = parseColor(a.v);
+      const cb = parseColor(b.v);
+      if (ca && cb) return lerpColor(ca, cb, p);
       return p < 0.5 ? a.v : b.v;
     }
   }
@@ -626,14 +665,34 @@ function filterFrame(t: number, tracks: Track[]): string {
     .join(" ");
 }
 
-export function toAnimatedSvg(anim: MotionAnimation): string {
+export interface AnimatedSvgOptions {
+  speed?: number;
+  canvasBg?: string;
+  trigger?: "load" | "hover";
+  loop?: boolean;
+  scale?: number;
+  minify?: boolean;
+  filename?: string;
+  includeMetadata?: boolean;
+  hyperlink?: string;
+  frameRate?: number;
+}
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOptions): string {
   const byTarget = new Map<string, Track[]>();
   for (const tr of anim.tracks) {
     if (!byTarget.has(tr.target)) byTarget.set(tr.target, []);
     byTarget.get(tr.target)!.push(tr);
   }
 
-  const iteration = anim.loop ? "infinite" : "1";
+  const iteration = (options?.loop ?? anim.loop) ? "infinite" : "1";
+  const speed = Math.max(0.1, options?.speed ?? 1);
+  const duration = anim.duration / speed;
+  const trigger = options?.trigger ?? "load";
   const blocks: string[] = [];
   const rules: string[] = [];
 
@@ -663,7 +722,7 @@ export function toAnimatedSvg(anim: MotionAnimation): string {
         .join("\n");
       const name = `m-${safeId}-transform`;
       blocks.push(`@keyframes ${name} {\n${frames}\n}`);
-      animations.push(`${name} ${anim.duration}ms linear ${iteration} both`);
+      animations.push(`${name} ${duration}ms linear ${iteration} both`);
       staticProps.push("transform-box: fill-box;");
       if (origins.length === 0) staticProps.push("transform-origin: center;");
     }
@@ -681,7 +740,7 @@ export function toAnimatedSvg(anim: MotionAnimation): string {
         .join("\n");
       const name = `m-${safeId}-origin`;
       blocks.push(`@keyframes ${name} {\n${frames}\n}`);
-      animations.push(`${name} ${anim.duration}ms linear ${iteration} both`);
+      animations.push(`${name} ${duration}ms linear ${iteration} both`);
       staticProps.push("transform-box: fill-box;");
     }
 
@@ -698,7 +757,7 @@ export function toAnimatedSvg(anim: MotionAnimation): string {
         .join("\n");
       const name = `m-${safeId}-filter`;
       blocks.push(`@keyframes ${name} {\n${frames}\n}`);
-      animations.push(`${name} ${anim.duration}ms linear ${iteration} both`);
+      animations.push(`${name} ${duration}ms linear ${iteration} both`);
     }
 
     for (const tr of list) {
@@ -712,26 +771,90 @@ export function toAnimatedSvg(anim: MotionAnimation): string {
       }
       const name = `m-${safeId}-${tr.property}`;
       blocks.push(`@keyframes ${name} {\n${keyframeCss(tr)}\n}`);
-      animations.push(`${name} ${anim.duration}ms linear ${iteration} both`);
+      animations.push(`${name} ${duration}ms linear ${iteration} both`);
     }
 
     if (animations.length > 0) {
       const uniqueProps = Array.from(new Set(staticProps));
-      rules.push(
-        `#${safeId} { animation: ${animations.join(", ")};${
-          uniqueProps.length ? ` ${uniqueProps.join(" ")}` : ""
-        } }`,
-      );
+      const rule = `animation: ${animations.join(", ")};${
+        uniqueProps.length ? ` ${uniqueProps.join(" ")}` : ""
+      }`;
+      if (trigger === "hover") {
+        rules.push(`#${safeId}:hover { ${rule} }`);
+      } else {
+        rules.push(`#${safeId} { ${rule} }`);
+      }
     }
   }
 
-  const css = [...blocks, ...rules].join("\n");
+  // Reduced motion: viewers who prefer it get the end pose, statically,
+  // instead of the animation. Each element's final sampled values become
+  // plain declarations with animation disabled.
+  const reducedRules: string[] = [];
+  for (const [id, list] of byTarget) {
+    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const parts: string[] = ["animation: none;"];
+    const transforms = list.filter((tr) => TRANSFORM_PROPERTIES.includes(tr.property));
+    if (transforms.length > 0) {
+      const finalTransform = transformFrame(1, transforms);
+      if (finalTransform) parts.push(`transform: ${finalTransform};`);
+      parts.push("transform-box: fill-box;");
+    }
+    const origins = list.filter((tr) => tr.property === "originX" || tr.property === "originY");
+    if (origins.length > 0) parts.push(`transform-origin: ${originFrame(1, origins)};`);
+    const filters = list.filter((tr) => FILTER_PROPERTIES.includes(tr.property));
+    if (filters.length > 0) {
+      const finalFilter = filterFrame(1, filters);
+      if (finalFilter) parts.push(`filter: ${finalFilter};`);
+    }
+    for (const tr of list) {
+      if (TRANSFORM_PROPERTIES.includes(tr.property) || tr.property === "originX" || tr.property === "originY" || FILTER_PROPERTIES.includes(tr.property)) continue;
+      const decl = declaration(tr.property, sampleTrack(tr, 1));
+      if (decl) parts.push(decl);
+    }
+    if (parts.length > 1) reducedRules.push(`#${safeId} { ${parts.join(" ")} }`);
+  }
+  const css = [...blocks, ...rules, ...(reducedRules.length > 0 ? [`@media (prefers-reduced-motion: reduce) {\n${reducedRules.join("\n")}\n}`] : [])].join("\n");
   let svg = anim.svg;
   if (!/\sxmlns=/.test(svg)) {
     svg = svg.replace(/<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"');
   }
+  // Canvas background
+  const bg = options?.canvasBg;
+  if (bg && bg !== "none") {
+    const vbMatch = svg.match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
+    const x = vbMatch ? vbMatch[1] : "0";
+    const y = vbMatch ? vbMatch[2] : "0";
+    const w = vbMatch ? vbMatch[3] : "100%";
+    const h = vbMatch ? vbMatch[4] : "100%";
+    const rect = `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${bg}" />`;
+    svg = svg.replace(/(<svg[^>]*>)/, `$1${rect}`);
+  }
+  // Scale (resolution bump): multiply width/height attributes only.
+  const scale = Math.max(0.1, options?.scale ?? 1);
+  if (scale !== 1) {
+    svg = svg.replace(/(\swidth\s*=\s*["'])(\d+(?:\.\d+)?)(["'])/i, (m, pre, num, post) => `${pre}${Math.round(Number(num) * scale)}${post}`);
+    svg = svg.replace(/(\sheight\s*=\s*["'])(\d+(?:\.\d+)?)(["'])/i, (m, pre, num, post) => `${pre}${Math.round(Number(num) * scale)}${post}`);
+  }
+  // Metadata
+  if (options?.includeMetadata) {
+    const titleTag = `<title>${escapeXml(anim.title || "Animation")}</title>`;
+    svg = svg.replace(/(<svg[^>]*>)/, `$1${titleTag}`);
+  }
+  if (options?.hyperlink) {
+    const link = options.hyperlink.trim();
+    if (link) {
+      svg = svg.replace(/(<svg[^>]*>)([\s\S]*)(<\/svg>)/, (m, open, inner, close) => {
+        // Avoid double-wrapping if a style tag exists; wrap all inner content.
+        return `${open}<a href="${escapeXml(link)}" target="_blank" rel="noopener noreferrer">${inner}</a>${close}`;
+      });
+    }
+  }
   if (svg.includes("</svg>")) {
     svg = svg.replace("</svg>", `<style>${css}</style></svg>`);
+  }
+  if (options?.minify) {
+    svg = svg.replace(/\s+/g, " ").replace(/>\s+</g, "><").trim();
   }
   return svg;
 }

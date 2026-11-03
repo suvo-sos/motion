@@ -28,7 +28,8 @@ import { Link, useNavigate } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getChatHomeThreadId } from "@/lib/chat-home-thread";
+import { getChatHomeThreadId, rememberLastChatThread } from "@/lib/chat-home-thread";
+import { startFreshStudioChat } from "@/lib/studio-chat";
 import { cn } from "@/lib/utils";
 import {
   chatHandoffComposerOptions,
@@ -92,7 +93,7 @@ export default function HomePage() {
   const [threadId] = useState(getChatHomeThreadId);
   const [uploading, setUploading] = useState(false);
   const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
-  const [view, setView] = useState<"projects" | "templates">("projects");
+  const [view, setView] = useState<"projects" | "templates">("templates");
   const save = useActionMutation("save-animation");
   const projectsQuery = useActionQuery(
     "list-animations",
@@ -125,6 +126,9 @@ export default function HomePage() {
         loop: template.loop,
       });
       if (result?.id) {
+        // Opening a template is a new project, not a continuation of whatever
+        // the agent sidebar last showed, so the studio starts on a new chat.
+        startFreshStudioChat();
         navigate(`/motion?id=${encodeURIComponent(result.id)}`);
       } else {
         alert(`Could not create "${template.label}": ${result?.error ?? "unknown error"}`);
@@ -155,6 +159,8 @@ export default function HomePage() {
         loop: true,
       });
       if (result?.id) {
+        // Same as templates: a fresh project opens with a fresh chat.
+        startFreshStudioChat();
         navigate(`/motion?id=${encodeURIComponent(result.id)}`);
       }
     } catch (err) {
@@ -168,6 +174,7 @@ export default function HomePage() {
     []) as ProjectSummary[];
 
   function start(message: string, options: ChatInitialComposerOptions = {}) {
+    rememberLastChatThread(threadId);
     const state: ChatRouteState = {
       initialMessage: message,
       initialComposerOptions: options,
@@ -207,18 +214,18 @@ export default function HomePage() {
             className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5"
           >
             <TabButton
-              active={view === "projects"}
-              count={projects.length}
-              onClick={() => setView("projects")}
-            >
-              My projects
-            </TabButton>
-            <TabButton
               active={view === "templates"}
               count={MOTION_TEMPLATES.length}
               onClick={() => setView("templates")}
             >
               Templates
+            </TabButton>
+            <TabButton
+              active={view === "projects"}
+              count={projects.length}
+              onClick={() => setView("projects")}
+            >
+              My projects
             </TabButton>
           </div>
           <div className="flex items-center gap-3">
@@ -251,26 +258,26 @@ export default function HomePage() {
           </div>
         </div>
 
-        {view === "templates" ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {MOTION_TEMPLATES.map((template) => (
-              <TemplateCard
-                key={template.id}
-                template={template}
-                busy={creatingTemplate === template.id}
-                disabled={creatingTemplate !== null}
-                onUse={() => void createFromTemplate(template)}
-              />
-            ))}
-          </div>
-        ) : projectsQuery.isLoading && projects.length === 0 ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className={cn("grid gap-4 sm:grid-cols-2 lg:grid-cols-3", view !== "templates" && "hidden")}>
+          {MOTION_TEMPLATES.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              busy={creatingTemplate === template.id}
+              disabled={creatingTemplate !== null}
+              onUse={() => void createFromTemplate(template)}
+            />
+          ))}
+        </div>
+
+        {projectsQuery.isLoading && projects.length === 0 ? (
+          <div className={cn("grid gap-4 sm:grid-cols-2 lg:grid-cols-3", view !== "projects" && "hidden")}>
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="h-48 rounded-lg" />
             ))}
           </div>
         ) : projects.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border px-6 py-14 text-center">
+          <div className={cn("flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border px-6 py-14 text-center", view !== "projects" && "hidden")}>
             <div className="grid size-10 place-items-center rounded-lg bg-muted text-foreground">
               <IconSparkles className="size-4" />
             </div>
@@ -290,7 +297,7 @@ export default function HomePage() {
             </Button>
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className={cn("grid gap-4 sm:grid-cols-2 lg:grid-cols-3", view !== "projects" && "hidden")}>
             {projects.map((project) => (
               <ProjectCard key={project.id} project={project} />
             ))}
@@ -320,7 +327,7 @@ function TabButton({
       className={cn(
         "inline-flex items-center gap-2 rounded-[6px] px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
-          ? "bg-background text-foreground shadow-sm"
+          ? "bg-blue-500 text-white shadow-sm"
           : "text-muted-foreground hover:text-foreground",
       )}
     >
@@ -328,7 +335,7 @@ function TabButton({
       <span
         className={cn(
           "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
-          active ? "bg-muted text-foreground" : "bg-muted/60 text-muted-foreground",
+          active ? "bg-blue-600 text-white" : "bg-muted/60 text-muted-foreground",
         )}
       >
         {count}
@@ -471,6 +478,7 @@ function HomeAgentComposer({
   );
 
   function startVoiceChat() {
+    rememberLastChatThread(threadId);
     void realtimeVoice?.start({ threadId });
     markAgentChatHomeHandoff("chat");
     navigateWithAgentChatViewTransition(navigate, chatThreadPath(threadId));
@@ -563,6 +571,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   return (
     <Link
       to={`/motion?id=${encodeURIComponent(project.id)}`}
+      onClick={startFreshStudioChat}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

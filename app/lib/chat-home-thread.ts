@@ -1,6 +1,7 @@
 import { markClientDraftThread } from "@agent-native/toolkit/app/chat/agentkit-chat/rail";
 
 const CHAT_HOME_THREAD_STORAGE_KEY = "agent-native.chat-home-thread";
+const LAST_CHAT_THREAD_STORAGE_KEY = "agent-native.motion.last-chat-thread";
 const CHAT_HOME_THREAD_TTL_MS = 10 * 60 * 1000;
 
 type PendingChatHomeThread = {
@@ -87,3 +88,42 @@ export function consumeChatHomeThreadId(threadId: string): boolean {
     return false;
   }
 }
+
+/**
+ * Remember the thread the home composer just started, so the studio sidebar can
+ * reopen it after the agent navigates from /chat to /motion. `getChatHomeThreadId`
+ * is consumed by the chat route, so it is already gone by the time the studio mounts.
+ */
+export function rememberLastChatThread(threadId: string): void {
+  if (typeof window === "undefined" || !threadId) return;
+  try {
+    window.sessionStorage.setItem(
+      LAST_CHAT_THREAD_STORAGE_KEY,
+      JSON.stringify({ id: threadId, issuedAt: Date.now() }),
+    );
+    // coercion-ok: the studio simply starts a fresh thread when this is unavailable.
+  } catch {
+    // Session storage can be unavailable in restricted browser contexts.
+  }
+}
+
+export function readLastChatThread(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(LAST_CHAT_THREAD_STORAGE_KEY);
+    if (!raw) return null;
+    const pending = JSON.parse(raw) as Partial<PendingChatHomeThread>;
+    if (
+      typeof pending.id === "string" &&
+      typeof pending.issuedAt === "number" &&
+      Date.now() - pending.issuedAt <= CHAT_HOME_THREAD_TTL_MS
+    ) {
+      return pending.id;
+    }
+    // coercion-ok: an expired handoff id is ignored and the sidebar starts fresh.
+  } catch {
+    // Ignore malformed or unavailable storage.
+  }
+  return null;
+}
+

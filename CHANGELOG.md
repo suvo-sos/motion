@@ -2,6 +2,20 @@
 
 All notable user-facing changes to this app are documented here.
 
+## 2026-11-03
+
+### Added
+
+- Image elements are first-class in the studio: add them from the canvas toolbar or the Elements rail (file or URL), drop an image file onto the artboard, or paste one from the clipboard.
+- The Properties panel has a dedicated Image section with a live preview, source editing, one-click replace, and contain/cover/stretch fit options.
+- Shapes, text, and freehand paths can be created directly in the studio: the "Add Shape" menu inserts rectangles (rounded), circles, ellipses, triangles, stars, lines, text, and groups; the pen tool (P) draws freehand paths. Geometry is editable in Properties → Group.
+- `view-screen` now reports the open animation's canvas size (`canvasSize`), and the agent prompt instructs it to fill the canvas instead of drawing tiny artwork.
+
+### Improved
+
+- Studio headers and toolbars use solid (filled) icons for sharper, more readable controls.
+- A build started from the home prompt now keeps its chat thread in the studio sidebar, so the prompt, the agent's run, and its edits stay visible beside the project instead of being replaced by an empty per-project conversation.
+
 ## 2026-10-10
 
 ### Fixed

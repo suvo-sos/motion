@@ -1,6 +1,6 @@
-# Motion Studio — Agent Guide
+# SVG MOTION — Agent Guide
 
-Motion Studio is a project-based, agent-native SVG motion app. A project is one animated SVG: raw SVG markup plus keyframe tracks. The agent draws the SVG and writes the tracks; the user shapes them on a timeline. `/home` is the project launcher, `/motion?id=<id>` is the studio, and `/chat` remains the full-screen chat surface.
+SVG MOTION is a project-based, agent-native SVG motion app. A project is one animated SVG: raw SVG markup plus keyframe tracks. The agent draws the SVG and writes the tracks; the user shapes them on a timeline. `/home` is the project launcher, `/motion?id=<id>` is the studio, and `/chat` remains the full-screen chat surface.
 
 ## Skills
 
@@ -31,13 +31,22 @@ For custom branding, keep `server/plugins/agent-native-email-branding.ts` aligne
 - `app/components/layout/Sidebar.tsx` lists **projects** from `list-animations`, not chat threads. It has no documentation or community links. Keep the project list scrollable and the “New project” action pointed at `/home`.
 - `app/components/home/HomePage.tsx` is the project launcher: the AgentKit composer, template prompt buttons, and project cards (with an SVG preview). It must not render docs/community columns.
 - `app/routes/motion.tsx` is the studio. `app/components/layout/Layout.tsx` omits the app sidebar and header on `/motion`, so the studio owns the full screen; the shared `AgentInspector` stays and the studio header hosts `AgentToggleButton`.
+- `AgentInspector` keeps one chat thread across `/home` → `/chat` → `/motion` (storage key `chat`, no per-project scope). A build started from the home composer must stay visible in the studio sidebar, so the inspector reopens the remembered thread (`rememberLastChatThread` / `readLastChatThread`) when the handoff is active. Opening a project from home (a template, an upload, or a saved project card) instead calls `startFreshStudioChat` (`app/lib/studio-chat.ts`) before navigating: it drops the sidebar's remembered thread and tab pointers so the studio opens on a brand-new chat instead of resurrecting the previous conversation.
 - `app/lib/app-config.ts` holds `APP_TITLE`; the sidebar brand, page titles, and metadata use it.
 
-## Motion Studio data
+## SVG MOTION data
 
 `animations` rows hold raw `svg`, a JSON `tracks` array, `duration` (ms), and `loop`. A track is `{ target, property, keyframes }`; `property` is one of `translateX`, `translateY`, `scale`, `rotate`, `opacity`, `fill`, `strokeDashoffset`; each keyframe is `{ t (0-1), v, ease? }`.
 
 Invariants: every `target` matches an element id in `svg`; ids are unique; keyframes are inside 0..1; loops match the first and last pose. The UI and the agent edit the same row, so the studio polls `list-animations` and `get-animation` and adopts external writes.
+
+Image elements (`<image>` with `href`, `x`, `y`, `width`, `height`, `preserveAspectRatio`) are first-class: the studio adds them from the Elements rail (file/URL), via drag-and-drop onto the artboard, or by pasting from the clipboard, and the Properties → Image section previews, replaces, and fits them.
+
+The studio also creates elements directly: the Elements rail "Add Shape" menu and the canvas toolbar insert rectangles (rounded), circles, ellipses, triangles, stars, lines, text, and groups; the pen tool (P) draws freehand paths by clicking points (close by clicking the first point, Enter to finish, Esc to cancel). Geometry is editable in Properties → Group.
+
+The canvas has five tools: Transform (V, move), Node (N, edit anchor points of paths/polygons/polylines/lines), Resize (R, scale from corners), Hand (H, pan), and Pen (P, draw).
+
+Right-clicking an element or group in the Elements list offers **Ask AI**: it tags that element in the agent composer (`app/lib/agent-element-context.ts`) with its markup, tree path, and existing tracks, selects it, and focuses the chat so the user can describe the change in plain language. The tag is a composer context chip for the agent and also an inline mention, which the framework serializes into the message text so the sent chat bubble shows the same element the input showed.
 
 | Action | Use |
 | --- | --- |

@@ -21,7 +21,7 @@ const messages = {
     emptyState: "問我任何問題",
     heroDescription: "讓代理檢查、解釋或更改此應用。",
     heroTitle: "我能幫你什麼？",
-    inspectEmptyState: "詢問我有關此應用的任何問題",
+    inspectEmptyState: "告訴我你想編輯或新增什麼",
     inspectSuggestionAction: "顯示可用操作",
     inspectSuggestionCapabilities: "這個應用能做什麼？",
     inspectSuggestionHello: "幫我開始使用",

@@ -1,11 +1,146 @@
-import { toAnimatedSvg, type MotionAnimation } from "./motion";
+import { toAnimatedSvg, type MotionAnimation, type AnimatedSvgOptions } from "./motion";
 
-export type ExportFormat = "svg" | "webcss" | "js" | "lottie";
+export type ExportFormat = "svg" | "webcss" | "js" | "copy";
 
 export interface ExportResult {
   content: string;
   filename: string;
   mime: string;
+}
+
+export interface ExportRenderOptions extends AnimatedSvgOptions {
+  // Optimization
+  optimize?: boolean;
+  precision?: number;
+  removeViewBox?: boolean;
+  removeDimensions?: boolean;
+  normalizeViewBox?: boolean;
+  removeDefaults?: boolean;
+  cleanupIds?: boolean;
+  // Accessibility
+  title?: string;
+  description?: string;
+  addAriaLabels?: boolean;
+  // Note: colorFormat / useCssVariables / externalCss were removed here —
+  // they were accepted as options but never implemented in export code,
+  // so keeping them only promised features that did nothing.
+}
+
+function roundNumber(num: number, precision: number): number {
+  const factor = Math.pow(10, precision);
+  return Math.round(num * factor) / factor;
+}
+
+function optimizeSvgContent(svg: string, options?: ExportRenderOptions): string {
+  if (!options?.optimize) return svg;
+
+  let optimized = svg;
+  const precision = options.precision ?? 2;
+
+  // Round numbers in SVG
+  if (precision < 3) {
+    optimized = optimized.replace(/(\d+\.\d{2,})/g, (match) => {
+      const num = parseFloat(match);
+      return roundNumber(num, precision).toString();
+    });
+  }
+
+  // Remove dimensions if requested
+  if (options.removeDimensions) {
+    optimized = optimized.replace(/\s+(width|height)=["'][^"']*["']/gi, '');
+  }
+
+  // Normalize viewBox if requested
+  if (options.normalizeViewBox) {
+    optimized = optimized.replace(
+      /viewBox=["']([^"']+)["']/,
+      (match, vb) => {
+        const parts = vb.split(/\s+/).map(parseFloat);
+        if (parts.length === 4 && parts.every(Number.isFinite)) {
+          const [x, y, w, h] = parts;
+          return `viewBox="${roundNumber(x, precision)} ${roundNumber(y, precision)} ${roundNumber(w, precision)} ${roundNumber(h, precision)}"`;
+        }
+        return match;
+      }
+    );
+  }
+
+  // Remove default fill and stroke
+  if (options.removeDefaults) {
+    optimized = optimized.replace(/\s+fill=["']#000000["']/gi, '');
+    optimized = optimized.replace(/\s+fill=["']black["']/gi, '');
+    optimized = optimized.replace(/\s+stroke=["']none["']/gi, '');
+  }
+
+  // Remove viewBox if requested (this option was previously accepted by the
+  // dialog but never applied).
+  if (options.removeViewBox) {
+    optimized = optimized.replace(/\s+viewBox=["'][^"']*["']/i, '');
+  }
+
+  // Cleanup IDs - shorten them
+  if (options.cleanupIds) {
+    const idMap = new Map<string, string>();
+    let idCounter = 0;
+    
+    // Find all IDs
+    optimized = optimized.replace(/\sid=["']([^"']+)["']/g, (match, id) => {
+      if (!idMap.has(id)) {
+        idMap.set(id, `e${idCounter++}`);
+      }
+      return ` id="${idMap.get(id)}"`;
+    });
+    
+    // Replace ID references. Two fixes vs the old code: (1) escape the old
+    // id before interpolating it into a RegExp, so ids containing regex
+    // characters (dots, brackets, etc.) can't break the replacement, and
+    // (2) also replace the sanitised id that toAnimatedSvg wrote into its
+    // CSS selectors (e.g. `my shape` -> `my_shape` in CSS, but the raw id
+    // in the element) — without this, an element with a space/dot in its
+    // id silently stopped animating after id cleanup.
+    const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    idMap.forEach((newId, oldId) => {
+      optimized = optimized.replace(new RegExp(`#${escapeRegExp(oldId)}\\b`, 'g'), `#${newId}`);
+      optimized = optimized.replace(new RegExp(`url\\(#${escapeRegExp(oldId)}\\)`, 'g'), `url(#${newId})`);
+      const safeId = oldId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      if (safeId !== oldId) {
+        optimized = optimized.replace(new RegExp(`#${escapeRegExp(safeId)}\\b`, 'g'), `#${newId}`);
+      }
+    });
+  }
+
+  // Add accessibility tags
+  if (options.title || options.description) {
+    const titleTag = options.title
+      ? `<title>${escapeHtml(options.title)}</title>`
+      : "";
+    const descTag = options.description
+      ? `<desc>${escapeHtml(options.description)}</desc>`
+      : "";
+    optimized = optimized.replace(
+      /(<svg[^>]*>)/,
+      `$1${titleTag}${descTag}`
+    );
+  }
+
+  if (options.addAriaLabels && options.title) {
+    optimized = optimized.replace(
+      /(<svg[^>]*?)>/,
+      `$1 role="img" aria-label="${escapeHtml(options.title)}">`
+    );
+  }
+
+  // Minify if requested
+  if (options.minify) {
+    // Remove comments
+    optimized = optimized.replace(/<!--[\s\S]*?-->/g, '');
+    // Remove extra whitespace between tags
+    optimized = optimized.replace(/>\s+</g, '><');
+    // Remove whitespace at start/end
+    optimized = optimized.trim();
+  }
+
+  return optimized;
 }
 
 function slug(s: string) {
@@ -19,16 +154,23 @@ function escapeHtml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function exportSvg(anim: MotionAnimation): ExportResult {
+export function exportSvg(anim: MotionAnimation, options?: ExportRenderOptions): ExportResult {
+  let svg = toAnimatedSvg(anim, options);
+  
+  // Apply optimization
+  svg = optimizeSvgContent(svg, options);
+  
   return {
-    content: toAnimatedSvg(anim),
+    content: svg,
     filename: `${slug(anim.title)}.svg`,
     mime: "image/svg+xml",
   };
 }
 
-export function exportWebCss(anim: MotionAnimation): ExportResult {
-  const svg = toAnimatedSvg(anim);
+export function exportWebCss(anim: MotionAnimation, options?: ExportRenderOptions): ExportResult {
+  let svg = toAnimatedSvg(anim, options);
+  svg = optimizeSvgContent(svg, options);
+  
   const content = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -52,8 +194,28 @@ ${svg}
   };
 }
 
-export function exportJs(anim: MotionAnimation): ExportResult {
-  const svg = anim.svg;
+export function exportJs(anim: MotionAnimation, options?: ExportRenderOptions): ExportResult {
+  const speed = Math.max(0.1, options?.speed ?? 1);
+  const trigger = options?.trigger ?? "load";
+  let svg = anim.svg;
+  const bg = options?.canvasBg;
+  if (bg && bg !== "none") {
+    const vbMatch = svg.match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
+    const x = vbMatch ? vbMatch[1] : "0";
+    const y = vbMatch ? vbMatch[2] : "0";
+    const w = vbMatch ? vbMatch[3] : "100%";
+    const h = vbMatch ? vbMatch[4] : "100%";
+    svg = svg.replace(/(<svg[^>]*>)/, `$1<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${bg}" />`);
+  }
+  const scale = Math.max(0.1, options?.scale ?? 1);
+  if (scale !== 1) {
+    svg = svg.replace(/(\swidth\s*=\s*["'])(\d+(?:\.\d+)?)(["'])/i, (m, pre, num, post) => `${pre}${Math.round(Number(num) * scale)}${post}`);
+    svg = svg.replace(/(\sheight\s*=\s*["'])(\d+(?:\.\d+)?)(["'])/i, (m, pre, num, post) => `${pre}${Math.round(Number(num) * scale)}${post}`);
+  }
+  if (options?.hyperlink && options.hyperlink.trim()) {
+    const link = options.hyperlink.trim();
+    svg = svg.replace(/(<svg[^>]*>)([\s\S]*)(<\/svg>)/, (m, open, inner, close) => `${open}<a href="${link}" target="_blank" rel="noopener noreferrer">${inner}</a>${close}`);
+  }
   const data = JSON.stringify(anim);
   const content = `<!DOCTYPE html>
 <html lang="en">
@@ -212,14 +374,26 @@ function applyAt(root, tracks, t) {
 }
 
 let start = null;
+const duration = animation.duration / speed;
+const frameInterval = 1000 / (options?.frameRate ?? 60);
+let lastApply = 0;
 function frame(now) {
   if (!start) start = now;
-  const elapsed = (now - start) % animation.duration;
-  const t = elapsed / animation.duration;
+  if (now - lastApply < frameInterval) { requestAnimationFrame(frame); return; }
+  lastApply = now;
+  const elapsed = (now - start) % duration;
+  const t = elapsed / duration;
   applyAt(document, animation.tracks || [], t);
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+const triggerMode = trigger;
+function startAnim() { requestAnimationFrame(frame); }
+if (triggerMode === "hover") {
+  const stageEl = document.getElementById("stage");
+  if (stageEl) stageEl.addEventListener("mouseenter", startAnim, { once: true });
+} else {
+  startAnim();
+}
 </script>
 </body>
 </html>`;
@@ -230,79 +404,33 @@ requestAnimationFrame(frame);
   };
 }
 
-export function exportLottie(anim: MotionAnimation): ExportResult {
-  // Build a minimal but valid Lottie composition embedding the static SVG
-  // as an image asset. Animation tracks are preserved as layer markers data
-  // is not fully converted; this provides a previewable Lottie file.
-  const svg = anim.svg;
-  const b64 =
-    typeof btoa === "function"
-      ? btoa(unescape(encodeURIComponent(svg)))
-      : Buffer.from(svg).toString("base64");
-  const vbMatch = svg.match(/viewBox=["']([^"']+)["']/i)?.[1]?.split(/\s+/);
-  const vb = vbMatch && vbMatch.length >= 4 ? vbMatch : ["0", "0", "200", "200"];
-  const w = parseFloat(vb[2] ?? "200") || 200;
-  const h = parseFloat(vb[3] ?? "200") || 200;
-  const frames = Math.max(1, Math.round((anim.duration / 1000) * 60));
-  const lottie = {
-    v: "5.7.4",
-    fr: 60,
-    ip: 0,
-    op: frames,
-    w,
-    h,
-    nm: anim.title || "Animation",
-    ddd: 0,
-    assets: [
-      {
-        id: "svg_asset",
-        w,
-        h,
-        u: "",
-        p: `data:image/svg+xml;base64,${b64}`,
-        e: 0,
-      },
-    ],
-    layers: [
-      {
-        ddd: 0,
-        ind: 1,
-        ty: 2,
-        nm: "svg",
-        refId: "svg_asset",
-        sr: 1,
-        ks: {
-          o: { a: 0, k: 100 },
-          r: { a: 0, k: 0 },
-          p: { a: 0, k: [w / 2, h / 2, 0] },
-          a: { a: 0, k: [w / 2, h / 2, 0] },
-          s: { a: 0, k: [100, 100, 100] },
-        },
-        ao: 0,
-        ip: 0,
-        op: frames,
-        st: 0,
-        bm: 0,
-      },
-    ],
-    markers: [],
-  };
-  return {
-    content: JSON.stringify(lottie, null, 2),
-    filename: `${slug(anim.title)}.json`,
-    mime: "application/json",
-  };
-}
-
-export function runExport(anim: MotionAnimation, format: ExportFormat): ExportResult {
+// Lottie export was removed: the old implementation embedded a static SVG
+// image in a single layer with empty markers, so it was not a real animated
+// Lottie at all. A real conversion needs a proper Lottie shape exporter;
+// shipping a static file labelled as animated would be worse than none.
+export function runExport(anim: MotionAnimation, format: ExportFormat, options?: ExportRenderOptions): ExportResult {
+  if (format === "copy") {
+    // Copy must return the animated export, not the raw artwork — copying
+    // the raw SVG silently dropped the animation entirely.
+    return exportSvg(anim, options);
+  }
+  
+  let result: ExportResult;
   switch (format) {
     case "svg":
-      return exportSvg(anim);
+      result = exportSvg(anim, options);
+      break;
     case "webcss":
-      return exportWebCss(anim);
+      result = exportWebCss(anim, options);
+      break;
     case "js":
-      return exportJs(anim);
-    case "lottie":
-      return exportLottie(anim);
+      result = exportJs(anim, options);
+      break;
   }
+  if (options?.filename && options.filename.trim()) {
+    const slug = options.filename.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+    const ext = result.filename.includes(".") ? result.filename.slice(result.filename.lastIndexOf(".")) : "";
+    result.filename = `${slug}${ext}`;
+  }
+  return result;
 }

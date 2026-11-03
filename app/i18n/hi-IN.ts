@@ -23,7 +23,7 @@ const messages = {
     emptyState: "मुझसे कुछ भी पूछें",
     heroDescription: "एजेंट से इस ऐप की जांच, व्याख्या या बदलाव करने को कहें।",
     heroTitle: "मैं कैसे मदद कर सकता हूं?",
-    inspectEmptyState: "इस ऐप के बारे में मुझसे कुछ भी पूछें",
+    inspectEmptyState: "मुझसे बताएं कि क्या संपादित या जोड़ना है",
     inspectSuggestionAction: "उपलब्ध क्रियाएं दिखाएं",
     inspectSuggestionCapabilities: "यह ऐप क्या कर सकता है?",
     inspectSuggestionHello: "शुरू करने में मेरी मदद करें",

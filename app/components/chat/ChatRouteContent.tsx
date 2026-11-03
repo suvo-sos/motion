@@ -88,7 +88,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { APP_TITLE } from "@/lib/app-config";
-import { consumeChatHomeThreadId } from "@/lib/chat-home-thread";
+import {
+  consumeChatHomeThreadId,
+  rememberLastChatThread,
+} from "@/lib/chat-home-thread";
 import {
   clearFailedChatHandoff,
   chatThreadPath,
@@ -947,6 +950,7 @@ function ChatLifecycleTracking({ threadId }: { threadId: string }) {
 
   useEffect(() => {
     const pendingCreation = consumeChatHomeThreadId(threadId);
+    rememberLastChatThread(threadId);
     lifecycleRef.current = {
       threadId,
       pendingCreation,
