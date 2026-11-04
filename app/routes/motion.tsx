@@ -77,6 +77,7 @@ import {
   IconZoomIn,
   IconZoomOut,
 } from "@tabler/icons-react";
+import { HexAlphaColorPicker } from "react-colorful";
 import { toast } from "sonner";
 import { MousePointer2, Hand, PenTool, Edit, Scale } from "lucide-react";
 import { Frame, Palette, Grid2x2 } from "lucide-react";
@@ -91,7 +92,10 @@ import {
 // studio route at load time (it did — 'Cannot find module' on dev start
 // when the package had not been installed yet). If the dynamic import
 // fails, the handler tells the user to run pnpm install and restart dev.
-import { askAgentAboutElement } from "../lib/agent-element-context";
+import {
+  askAgentAboutColor,
+  askAgentAboutElement,
+} from "../lib/agent-element-context";
 import { ColorPicker } from "@/components/ui/color-picker";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -1424,6 +1428,14 @@ export default function MotionRoute() {
             onAddElement={handleAddElement}
             onAddAsset={handleAddAsset}
             onAddPath={handleAddPath}
+            onRenameElement={handleRenameElement}
+            onRemoveElement={handleRemoveElement}
+            onEditText={handleEditText}
+            onEditImageSource={handleEditImageSource}
+            onEditPath={handleEditPath}
+            onEditAttributes={handleEditAttributes}
+            onToggleLock={handleToggleLock}
+            onToggleHide={handleToggleHide}
           />
         )}
       </div>
@@ -2021,6 +2033,267 @@ function TreeLines({
   );
 }
 
+function ElementContextMenuItems({
+  node,
+  isLocked,
+  isHidden,
+  moveTargets,
+  onAskAi,
+  onRename,
+  onDelete,
+  onEditText,
+  onEditImageSource,
+  onEditPath,
+  onEditAttributes,
+  onGroupElement,
+  onUngroupElement,
+  onMoveElement,
+  onBringToFront,
+  onBringForward,
+  onSendBackward,
+  onSendToBack,
+  onToggleLock,
+  onToggleHide,
+}: {
+  node: TreeNode;
+  isLocked: boolean;
+  isHidden: boolean;
+  moveTargets: MoveTarget[];
+  onAskAi: (node: TreeNode) => void;
+  onRename: (node: TreeNode) => void;
+  onDelete: (node: TreeNode) => void;
+  onEditText: (node: TreeNode) => void;
+  onEditImageSource: (node: TreeNode) => void;
+  onEditPath: (node: TreeNode) => void;
+  onEditAttributes: (node: TreeNode) => void;
+  onGroupElement: (node: TreeNode) => void;
+  onUngroupElement: (node: TreeNode) => void;
+  onMoveElement: (node: TreeNode, targetPath: string | null) => void;
+  onBringToFront: (node: TreeNode) => void;
+  onBringForward: (node: TreeNode) => void;
+  onSendBackward: (node: TreeNode) => void;
+  onSendToBack: (node: TreeNode) => void;
+  onToggleLock: (node: TreeNode) => void;
+  onToggleHide: (node: TreeNode) => void;
+}) {
+  const isGroup = node.tag.toLowerCase() === "g";
+  return (
+    <>
+          {/* Hand the element to the agent: it lands as a context chip in the
+              composer so the user can just describe the change they want. */}
+          <ContextMenuPrimitive.Item
+            className="flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+            onSelect={() => onAskAi(node)}
+          >
+            <span className="flex items-center gap-2">
+              <IconSparklesFilled className="size-3.5 text-[#2391FF]" />
+              <span>Ask AI</span>
+            </span>
+            <span className="text-[10px] text-muted-foreground">tag element</span>
+          </ContextMenuPrimitive.Item>
+
+          <div className="my-1 h-px bg-border" />
+
+          {node.id ? (
+            <>
+              <ContextMenuPrimitive.Item
+                className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                onSelect={() => navigator.clipboard?.writeText(node.id)}
+              >
+                <span>Copy ID</span>
+                <span className="text-[10px] text-muted-foreground font-mono">{node.id}</span>
+              </ContextMenuPrimitive.Item>
+              <ContextMenuPrimitive.Item
+                className="cursor-pointer rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                onSelect={() => onRename(node)}
+              >
+                Rename ID
+              </ContextMenuPrimitive.Item>
+            </>
+          ) : (
+            <ContextMenuPrimitive.Item
+              className="cursor-pointer rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+              onSelect={() => onRename(node)}
+            >
+              Assign ID...
+            </ContextMenuPrimitive.Item>
+          )}
+
+          <div className="my-1 h-px bg-border" />
+
+          {/* Element-specific edit options */}
+          {node.tag.toLowerCase() === "text" || node.tag.toLowerCase() === "tspan" ? (
+            <ContextMenuPrimitive.Item
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+              onSelect={() => onEditText(node)}
+            >
+              <IconLetterT className="size-3.5 text-rose-500" />
+              <span>Edit Text Content</span>
+            </ContextMenuPrimitive.Item>
+          ) : null}
+
+          {node.tag.toLowerCase() === "image" ? (
+            <ContextMenuPrimitive.Item
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+              onSelect={() => onEditImageSource(node)}
+            >
+              <IconPhotoFilled className="size-3.5 text-sky-500" />
+              <span>Edit Image Source</span>
+            </ContextMenuPrimitive.Item>
+          ) : null}
+
+          {node.tag.toLowerCase() === "path" ? (
+            <ContextMenuPrimitive.Item
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+              onSelect={() => onEditPath(node)}
+            >
+              <IconVector className="size-3.5 text-indigo-500" />
+              <span>Edit Path Data</span>
+            </ContextMenuPrimitive.Item>
+          ) : null}
+
+          <ContextMenuPrimitive.Item
+            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+            onSelect={() => onEditAttributes(node)}
+          >
+            <IconAdjustmentsHorizontalFilled className="size-3.5 text-primary" />
+            <span>Edit Attribute...</span>
+          </ContextMenuPrimitive.Item>
+
+          {node.path ? (
+            <>
+              <div className="my-1 h-px bg-border" />
+              <ContextMenuPrimitive.Sub>
+                <ContextMenuPrimitive.SubTrigger className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent">
+                  <span className="flex items-center gap-2">
+                    <IconTransformFilled className="size-3.5 text-primary" />
+                    <span>Arrange</span>
+                  </span>
+                  <IconChevronRight className="size-3.5 text-muted-foreground" />
+                </ContextMenuPrimitive.SubTrigger>
+                <ContextMenuPrimitive.Portal>
+                  <ContextMenuPrimitive.SubContent className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onBringToFront(node)}
+                    >
+                      <IconArrowBarToUp className="size-3.5 text-blue-500" />
+                      <span>Bring to Front</span>
+                    </ContextMenuPrimitive.Item>
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onBringForward(node)}
+                    >
+                      <IconArrowUp className="size-3.5 text-blue-400" />
+                      <span>Bring Forward</span>
+                    </ContextMenuPrimitive.Item>
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onSendBackward(node)}
+                    >
+                      <IconArrowDown className="size-3.5 text-orange-400" />
+                      <span>Send Backward</span>
+                    </ContextMenuPrimitive.Item>
+                    <ContextMenuPrimitive.Item
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                      onSelect={() => onSendToBack(node)}
+                    >
+                      <IconArrowBarToDown className="size-3.5 text-orange-500" />
+                      <span>Send to Back</span>
+                    </ContextMenuPrimitive.Item>
+                  </ContextMenuPrimitive.SubContent>
+                </ContextMenuPrimitive.Portal>
+              </ContextMenuPrimitive.Sub>
+              <div className="my-1 h-px bg-border" />
+              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Structure
+              </div>
+              <ContextMenuPrimitive.Item
+                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                onSelect={() => onGroupElement(node)}
+              >
+                <IconFolderFilled className="size-3.5 text-amber-500" />
+                <span>Group</span>
+              </ContextMenuPrimitive.Item>
+              {isGroup && node.hasChildren ? (
+                <ContextMenuPrimitive.Item
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                  onSelect={() => onUngroupElement(node)}
+                >
+                  <IconFolderOpenFilled className="size-3.5 text-amber-500" />
+                  <span>Ungroup</span>
+                </ContextMenuPrimitive.Item>
+              ) : null}
+              {moveTargets.length > 0 ? (
+                <ContextMenuPrimitive.Sub>
+                  <ContextMenuPrimitive.SubTrigger className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent">
+                    <span className="flex items-center gap-2">
+                      <IconFolderFilled className="size-3.5 text-muted-foreground" />
+                      <span>Move into</span>
+                    </span>
+                    <IconChevronRight className="size-3.5 text-muted-foreground" />
+                  </ContextMenuPrimitive.SubTrigger>
+                  <ContextMenuPrimitive.Portal>
+                    <ContextMenuPrimitive.SubContent className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+                      <ContextMenuPrimitive.Item
+                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                        onSelect={() => onMoveElement(node, null)}
+                      >
+                        <IconFrame className="size-3.5 text-blue-500" />
+                        <span>Artboard</span>
+                      </ContextMenuPrimitive.Item>
+                      {moveTargets.map((target) => (
+                        <ContextMenuPrimitive.Item
+                          key={target.path}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+                          onSelect={() => onMoveElement(node, target.path)}
+                        >
+                          <IconFolderFilled className="size-3.5 text-amber-500" />
+                          <span
+                            className="min-w-0 truncate"
+                            style={{ paddingLeft: target.depth * 8 }}
+                          >
+                            {target.label}
+                          </span>
+                        </ContextMenuPrimitive.Item>
+                      ))}
+                    </ContextMenuPrimitive.SubContent>
+                  </ContextMenuPrimitive.Portal>
+                </ContextMenuPrimitive.Sub>
+              ) : null}
+            </>
+          ) : null}
+
+          <div className="my-1 h-px bg-border" />
+
+          <ContextMenuPrimitive.Item
+            className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+            onSelect={() => onToggleLock(node)}
+          >
+            <span>{isLocked ? "Unlock Element" : "Lock Element"}</span>
+            {isLocked ? <IconLockFilled className="size-3.5 text-amber-500" /> : <IconLockOpen className="size-3.5 text-muted-foreground" />}
+          </ContextMenuPrimitive.Item>
+
+          <ContextMenuPrimitive.Item
+            className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
+            onSelect={() => onToggleHide(node)}
+          >
+            <span>{isHidden ? "Show Element" : "Hide Element"}</span>
+            {isHidden ? <IconEyeOff className="size-3.5 text-muted-foreground" /> : <IconEyeFilled className="size-3.5 text-muted-foreground" />}
+          </ContextMenuPrimitive.Item>
+
+          <div className="my-1 h-px bg-border" />
+
+          <ContextMenuPrimitive.Item
+            className="cursor-pointer rounded px-2 py-1.5 text-[12px] text-destructive outline-none hover:bg-destructive/10"
+            onSelect={() => onDelete(node)}
+          >
+            Delete Element
+          </ContextMenuPrimitive.Item>
+    </>
+  );
+}
+
 function ElementRow({
   node,
   depth,
@@ -2253,217 +2526,28 @@ function ElementRow({
       {/* Context Menu */}
       <ContextMenuPrimitive.Portal>
         <ContextMenuPrimitive.Content className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-80">
-          {/* Hand the element to the agent: it lands as a context chip in the
-              composer so the user can just describe the change they want. */}
-          <ContextMenuPrimitive.Item
-            className="flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-            onSelect={() => onAskAi(node)}
-          >
-            <span className="flex items-center gap-2">
-              <IconSparklesFilled className="size-3.5 text-[#2391FF]" />
-              <span>Ask AI</span>
-            </span>
-            <span className="text-[10px] text-muted-foreground">tag element</span>
-          </ContextMenuPrimitive.Item>
-
-          <div className="my-1 h-px bg-border" />
-
-          {node.id ? (
-            <>
-              <ContextMenuPrimitive.Item
-                className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                onSelect={() => navigator.clipboard?.writeText(node.id)}
-              >
-                <span>Copy ID</span>
-                <span className="text-[10px] text-muted-foreground font-mono">{node.id}</span>
-              </ContextMenuPrimitive.Item>
-              <ContextMenuPrimitive.Item
-                className="cursor-pointer rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                onSelect={() => onRename(node)}
-              >
-                Rename ID
-              </ContextMenuPrimitive.Item>
-            </>
-          ) : (
-            <ContextMenuPrimitive.Item
-              className="cursor-pointer rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-              onSelect={() => onRename(node)}
-            >
-              Assign ID...
-            </ContextMenuPrimitive.Item>
-          )}
-
-          <div className="my-1 h-px bg-border" />
-
-          {/* Element-specific edit options */}
-          {node.tag.toLowerCase() === "text" || node.tag.toLowerCase() === "tspan" ? (
-            <ContextMenuPrimitive.Item
-              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-              onSelect={() => onEditText(node)}
-            >
-              <IconLetterT className="size-3.5 text-rose-500" />
-              <span>Edit Text Content</span>
-            </ContextMenuPrimitive.Item>
-          ) : null}
-
-          {node.tag.toLowerCase() === "image" ? (
-            <ContextMenuPrimitive.Item
-              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-              onSelect={() => onEditImageSource(node)}
-            >
-              <IconPhotoFilled className="size-3.5 text-sky-500" />
-              <span>Edit Image Source</span>
-            </ContextMenuPrimitive.Item>
-          ) : null}
-
-          {node.tag.toLowerCase() === "path" ? (
-            <ContextMenuPrimitive.Item
-              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-              onSelect={() => onEditPath(node)}
-            >
-              <IconVector className="size-3.5 text-indigo-500" />
-              <span>Edit Path Data</span>
-            </ContextMenuPrimitive.Item>
-          ) : null}
-
-          <ContextMenuPrimitive.Item
-            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-            onSelect={() => onEditAttributes(node)}
-          >
-            <IconAdjustmentsHorizontalFilled className="size-3.5 text-primary" />
-            <span>Edit Attribute...</span>
-          </ContextMenuPrimitive.Item>
-
-          {node.path ? (
-            <>
-              <div className="my-1 h-px bg-border" />
-              <ContextMenuPrimitive.Sub>
-                <ContextMenuPrimitive.SubTrigger className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent">
-                  <span className="flex items-center gap-2">
-                    <IconTransformFilled className="size-3.5 text-primary" />
-                    <span>Arrange</span>
-                  </span>
-                  <IconChevronRight className="size-3.5 text-muted-foreground" />
-                </ContextMenuPrimitive.SubTrigger>
-                <ContextMenuPrimitive.Portal>
-                  <ContextMenuPrimitive.SubContent className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
-                    <ContextMenuPrimitive.Item
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                      onSelect={() => onBringToFront(node)}
-                    >
-                      <IconArrowBarToUp className="size-3.5 text-blue-500" />
-                      <span>Bring to Front</span>
-                    </ContextMenuPrimitive.Item>
-                    <ContextMenuPrimitive.Item
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                      onSelect={() => onBringForward(node)}
-                    >
-                      <IconArrowUp className="size-3.5 text-blue-400" />
-                      <span>Bring Forward</span>
-                    </ContextMenuPrimitive.Item>
-                    <ContextMenuPrimitive.Item
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                      onSelect={() => onSendBackward(node)}
-                    >
-                      <IconArrowDown className="size-3.5 text-orange-400" />
-                      <span>Send Backward</span>
-                    </ContextMenuPrimitive.Item>
-                    <ContextMenuPrimitive.Item
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                      onSelect={() => onSendToBack(node)}
-                    >
-                      <IconArrowBarToDown className="size-3.5 text-orange-500" />
-                      <span>Send to Back</span>
-                    </ContextMenuPrimitive.Item>
-                  </ContextMenuPrimitive.SubContent>
-                </ContextMenuPrimitive.Portal>
-              </ContextMenuPrimitive.Sub>
-              <div className="my-1 h-px bg-border" />
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Structure
-              </div>
-              <ContextMenuPrimitive.Item
-                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                onSelect={() => onGroupElement(node)}
-              >
-                <IconFolderFilled className="size-3.5 text-amber-500" />
-                <span>Group</span>
-              </ContextMenuPrimitive.Item>
-              {isGroup && node.hasChildren ? (
-                <ContextMenuPrimitive.Item
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                  onSelect={() => onUngroupElement(node)}
-                >
-                  <IconFolderOpenFilled className="size-3.5 text-amber-500" />
-                  <span>Ungroup</span>
-                </ContextMenuPrimitive.Item>
-              ) : null}
-              {moveTargets.length > 0 ? (
-                <ContextMenuPrimitive.Sub>
-                  <ContextMenuPrimitive.SubTrigger className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent">
-                    <span className="flex items-center gap-2">
-                      <IconFolderFilled className="size-3.5 text-muted-foreground" />
-                      <span>Move into</span>
-                    </span>
-                    <IconChevronRight className="size-3.5 text-muted-foreground" />
-                  </ContextMenuPrimitive.SubTrigger>
-                  <ContextMenuPrimitive.Portal>
-                    <ContextMenuPrimitive.SubContent className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
-                      <ContextMenuPrimitive.Item
-                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                        onSelect={() => onMoveElement(node, null)}
-                      >
-                        <IconFrame className="size-3.5 text-blue-500" />
-                        <span>Artboard</span>
-                      </ContextMenuPrimitive.Item>
-                      {moveTargets.map((target) => (
-                        <ContextMenuPrimitive.Item
-                          key={target.path}
-                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-                          onSelect={() => onMoveElement(node, target.path)}
-                        >
-                          <IconFolderFilled className="size-3.5 text-amber-500" />
-                          <span
-                            className="min-w-0 truncate"
-                            style={{ paddingLeft: target.depth * 8 }}
-                          >
-                            {target.label}
-                          </span>
-                        </ContextMenuPrimitive.Item>
-                      ))}
-                    </ContextMenuPrimitive.SubContent>
-                  </ContextMenuPrimitive.Portal>
-                </ContextMenuPrimitive.Sub>
-              ) : null}
-            </>
-          ) : null}
-
-          <div className="my-1 h-px bg-border" />
-
-          <ContextMenuPrimitive.Item
-            className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-            onSelect={() => onToggleLock(node)}
-          >
-            <span>{isLocked ? "Unlock Element" : "Lock Element"}</span>
-            {isLocked ? <IconLockFilled className="size-3.5 text-amber-500" /> : <IconLockOpen className="size-3.5 text-muted-foreground" />}
-          </ContextMenuPrimitive.Item>
-
-          <ContextMenuPrimitive.Item
-            className="flex cursor-pointer items-center justify-between rounded px-2 py-1.5 text-[12px] outline-none hover:bg-accent"
-            onSelect={() => onToggleHide(node)}
-          >
-            <span>{isHidden ? "Show Element" : "Hide Element"}</span>
-            {isHidden ? <IconEyeOff className="size-3.5 text-muted-foreground" /> : <IconEyeFilled className="size-3.5 text-muted-foreground" />}
-          </ContextMenuPrimitive.Item>
-
-          <div className="my-1 h-px bg-border" />
-
-          <ContextMenuPrimitive.Item
-            className="cursor-pointer rounded px-2 py-1.5 text-[12px] text-destructive outline-none hover:bg-destructive/10"
-            onSelect={() => onDelete(node)}
-          >
-            Delete Element
-          </ContextMenuPrimitive.Item>
+          <ElementContextMenuItems
+            node={node}
+            isLocked={isLocked}
+            isHidden={isHidden}
+            moveTargets={moveTargets}
+            onAskAi={onAskAi}
+            onRename={onRename}
+            onDelete={onDelete}
+            onEditText={onEditText}
+            onEditImageSource={onEditImageSource}
+            onEditPath={onEditPath}
+            onEditAttributes={onEditAttributes}
+            onGroupElement={onGroupElement}
+            onUngroupElement={onUngroupElement}
+            onMoveElement={onMoveElement}
+            onBringToFront={onBringToFront}
+            onBringForward={onBringForward}
+            onSendBackward={onSendBackward}
+            onSendToBack={onSendToBack}
+            onToggleLock={onToggleLock}
+            onToggleHide={onToggleHide}
+          />
         </ContextMenuPrimitive.Content>
       </ContextMenuPrimitive.Portal>
     </ContextMenuPrimitive.Root>
@@ -5905,6 +5989,432 @@ function ElementsRail({
   );
 }
 
+function AgentColorMention({
+  hideWhenInjected = false,
+}: {
+  hideWhenInjected?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [injected, setInjected] = useState(false);
+  useEffect(() => {
+    if (!hideWhenInjected) return;
+    const onInjected = () => setInjected(true);
+    window.addEventListener("composer-color-injected", onInjected);
+    return () => window.removeEventListener("composer-color-injected", onInjected);
+  }, [hideWhenInjected]);
+  if (hideWhenInjected && injected) return null;
+  const [mode, setMode] = useState<"solid" | "gradient">("solid");
+  const [solidColor, setSolidColor] = useState("#2391FF");
+  const [fromColor, setFromColor] = useState("#2391FF");
+  const [toColor, setToColor] = useState("#000000");
+  const [editingStop, setEditingStop] = useState<"from" | "to">("from");
+  const [angle, setAngle] = useState(90);
+  const [hasPicked, setHasPicked] = useState(false);
+
+  const toSixDigit = (value: string) => {
+    const clean = value.trim();
+    if (!/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(clean)) return "#2391FF";
+    return clean.slice(0, 7);
+  };
+  const currentColor =
+    mode === "solid" ? solidColor : editingStop === "from" ? fromColor : toColor;
+  const code =
+    mode === "solid"
+      ? toSixDigit(solidColor)
+      : `linear-gradient(${angle}deg, ${toSixDigit(fromColor)}, ${toSixDigit(toColor)})`;
+  const buttonBackground =
+    mode === "solid" ? toSixDigit(solidColor) : code;
+
+  const setCurrentColor = (next: string) => {
+    const clean = toSixDigit(next);
+    if (mode === "solid") {
+      setSolidColor(clean);
+    } else if (editingStop === "from") {
+      setFromColor(clean);
+    } else {
+      setToColor(clean);
+    }
+    setHasPicked(true);
+  };
+
+  const handleAdd = () => {
+    askAgentAboutColor(code);
+    setOpen(false);
+    setHasPicked(false);
+  };
+
+  const presets = [
+    "#000000",
+    "#ffffff",
+    "#ef4444",
+    "#f59e0b",
+    "#22c55e",
+    "#0ea5e9",
+    "#2391FF",
+    "#8b5cf6",
+    "#ec4899",
+  ];
+
+  return (
+    <div className="relative group shrink-0">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-7 rounded-full p-1"
+            aria-label="Mention a colour in the agent prompt"
+            title="Mention a colour"
+          >
+            <span
+              className="block size-full rounded-full border border-border"
+              style={{ background: buttonBackground }}
+            />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" sideOffset={6} className="w-[280px] p-3">
+          <div className="space-y-3">
+            <div className="flex gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant={mode === "solid" ? "default" : "outline"}
+                className="h-7 flex-1 text-[12px]"
+                onClick={() => setMode("solid")}
+              >
+                Solid
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={mode === "gradient" ? "default" : "outline"}
+                className="h-7 flex-1 text-[12px]"
+                onClick={() => setMode("gradient")}
+              >
+                Gradient
+              </Button>
+            </div>
+
+            {mode === "gradient" ? (
+              <div className="flex gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={editingStop === "from" ? "default" : "outline"}
+                  className="h-7 flex-1 text-[12px]"
+                  onClick={() => setEditingStop("from")}
+                >
+                  <span
+                    className="mr-1.5 inline-block size-3 rounded-[2px] border border-border"
+                    style={{ backgroundColor: toSixDigit(fromColor) }}
+                  />
+                  From
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={editingStop === "to" ? "default" : "outline"}
+                  className="h-7 flex-1 text-[12px]"
+                  onClick={() => setEditingStop("to")}
+                >
+                  <span
+                    className="mr-1.5 inline-block size-3 rounded-[2px] border border-border"
+                    style={{ backgroundColor: toSixDigit(toColor) }}
+                  />
+                  To
+                </Button>
+              </div>
+            ) : null}
+
+            <div className="motion-color-picker">
+              <HexAlphaColorPicker
+                color={toSixDigit(currentColor)}
+                onChange={setCurrentColor}
+              />
+            </div>
+
+            <label className="block space-y-1">
+              <span className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Hex
+              </span>
+              <Input
+                value={toSixDigit(currentColor)}
+                onChange={(event) => {
+                  const next = event.target.value.trim();
+                  if (/^#?[0-9a-fA-F]{6}$/.test(next)) {
+                    setCurrentColor(next.startsWith("#") ? next : `#${next}`);
+                  }
+                }}
+                className="h-7 font-mono text-[11px]"
+                placeholder="#2391FF"
+                spellCheck={false}
+              />
+            </label>
+
+            <div className="flex flex-wrap gap-1.5">
+              {presets.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setCurrentColor(preset)}
+                  className="grid size-6 place-items-center rounded-[5px] border border-black/10 transition-transform hover:scale-110"
+                  style={{ backgroundColor: preset }}
+                  aria-label={`Use ${preset}`}
+                />
+              ))}
+            </div>
+
+            {mode === "gradient" ? (
+              <div className="space-y-1.5">
+                <span className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Direction
+                </span>
+                <div className="flex items-center gap-1.5">
+                  {[0, 45, 90, 180].map((deg) => (
+                    <Button
+                      key={deg}
+                      type="button"
+                      size="sm"
+                      variant={angle === deg ? "default" : "outline"}
+                      className="h-7 flex-1 text-[12px]"
+                      onClick={() => {
+                        setAngle(deg);
+                        setHasPicked(true);
+                      }}
+                    >
+                      {deg}°
+                    </Button>
+                  ))}
+                  <Input
+                    type="number"
+                    min={0}
+                    max={360}
+                    value={angle}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (Number.isFinite(next)) {
+                        setAngle(Math.max(0, Math.min(360, Math.round(next))));
+                        setHasPicked(true);
+                      }
+                    }}
+                    className="h-7 w-16 font-mono text-[11px]"
+                    aria-label="Gradient angle in degrees"
+                  />
+                </div>
+                <div
+                  className="h-6 rounded-md border border-border"
+                  style={{ background: code }}
+                />
+              </div>
+            ) : null}
+
+            <div className="min-w-0 break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">
+              {code}
+            </div>
+
+            {hasPicked ? (
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 w-full bg-[#2391FF] text-white hover:bg-[#1f7fe0]"
+                onClick={handleAdd}
+              >
+                Add colour
+              </Button>
+            ) : null}
+          </div>
+        </PopoverContent>
+      </Popover>
+      <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Mention a colour</span>
+    </div>
+  );
+}
+
+function ComposerMentionStyler() {
+  useEffect(() => {
+    const codes = new Set<string>();
+    const styleChip = (chip: HTMLElement, code: string) => {
+      if (chip.getAttribute("data-motion-color-circle") === code) return;
+      chip.setAttribute("data-motion-color-circle", code);
+      chip.setAttribute("title", code);
+      chip.style.background = code;
+      chip.style.setProperty("width", "20px", "important");
+      chip.style.setProperty("height", "20px", "important");
+      chip.style.setProperty("min-width", "20px", "important");
+      chip.style.setProperty("max-width", "20px", "important");
+      chip.style.setProperty("min-height", "20px", "important");
+      chip.style.setProperty("max-height", "20px", "important");
+      chip.style.setProperty("align-self", "center", "important");
+      chip.style.setProperty("flex-shrink", "0", "important");
+      chip.style.borderRadius = "9999px";
+      chip.style.padding = "0";
+      chip.style.display = "inline-flex";
+      chip.style.alignItems = "center";
+      chip.style.justifyContent = "center";
+      chip.style.overflow = "hidden";
+      chip.style.verticalAlign = "middle";
+      chip.style.border = "1px solid rgba(0,0,0,0.12)";
+      chip.style.color = "transparent";
+      chip.style.fontSize = "0";
+      chip.querySelectorAll("*").forEach((child) => {
+        const el = child as HTMLElement;
+        el.style.opacity = "0";
+        el.style.fontSize = "0";
+      });
+    };
+    const tryStyle = () => {
+      if (codes.size === 0) return;
+      const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
+      for (const code of codes) {
+        const matches = all.filter((el) => {
+          if (el.getAttribute("data-motion-color-circle") === code) return false;
+          const text = (el.textContent || "").trim();
+          if (
+            !(
+              text === code ||
+              (text.includes(code) && text.length < code.length + 12)
+            )
+          )
+            return false;
+          // Skip wrappers: style only the deepest chip, not an ancestor
+          // that merely contains it. With an otherwise empty prompt the
+          // wrapper's text is identical to the chip's, which previously
+          // stretched the input tall.
+          const descendants = el.querySelectorAll("*");
+          for (const d of Array.from(descendants)) {
+            if ((d.textContent || "").trim() === code) return false;
+          }
+          return true;
+        });
+        const depth = (el: HTMLElement) => {
+          let n = 0;
+          let p: HTMLElement | null = el;
+          while (p.parentElement) {
+            n++;
+            p = p.parentElement;
+          }
+          return n;
+        };
+        matches.sort(
+          (a, b) =>
+            depth(b) - depth(a) ||
+            (a.textContent || "").length - (b.textContent || "").length,
+        );
+        const chip = matches[0];
+        if (chip) styleChip(chip, code);
+      }
+    };
+    const onMentioned = (e: Event) => {
+      const code = (e as CustomEvent<string>).detail;
+      if (typeof code === "string" && code) {
+        codes.add(code);
+        setTimeout(tryStyle, 50);
+        setTimeout(tryStyle, 300);
+        setTimeout(tryStyle, 1000);
+      }
+    };
+    window.addEventListener("motion-color-mentioned", onMentioned as EventListener);
+    const observer = new MutationObserver(tryStyle);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    return () => {
+      window.removeEventListener("motion-color-mentioned", onMentioned as EventListener);
+      observer.disconnect();
+    };
+  }, []);
+  return null;
+}
+
+function ComposerColorInjector() {
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    let container: HTMLDivElement | null = null;
+    let disposed = false;
+    const findModelButton = (): HTMLElement | null => {
+      const all = Array.from(
+        document.querySelectorAll<HTMLElement>("button"),
+      );
+      const labelled = all.find(
+        (b) =>
+          /model/i.test(b.getAttribute("aria-label") || "") ||
+          /model/i.test(b.getAttribute("title") || ""),
+      );
+      if (labelled) return labelled;
+      const composer = document.querySelector(
+        ".agentkit-composer, .agent-kit-chat-footer-stack",
+      );
+      const scope = composer
+        ? Array.from(composer.querySelectorAll<HTMLElement>("button"))
+        : all;
+      const textModel = scope.find((b) => /model/i.test(b.textContent || ""));
+      if (textModel) return textModel;
+      const menuButtons = scope.filter(
+        (b) =>
+          b.getAttribute("aria-haspopup") === "menu" ||
+          b.getAttribute("aria-haspopup") === "true",
+      );
+      return (
+        menuButtons.find(
+          (b) =>
+            !/send|voice|attach|upload|plus/i.test(
+              `${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.textContent || ""}`,
+            ),
+        ) || null
+      );
+    };
+    const tryInject = () => {
+      if (disposed) return;
+      if (container && container.isConnected) return;
+      const modelButton = findModelButton();
+      let anchorParent: HTMLElement | null = null;
+      let anchor: HTMLElement | null = null;
+      if (modelButton && modelButton.parentElement) {
+        anchorParent = modelButton.parentElement;
+        anchor = modelButton;
+      } else {
+        // Bottom-plane fallback: if the model button cannot be found, do
+        // not leave the colour button in the top bar. Put it at the left
+        // end of the composer's bottom toolbar instead, so it is always
+        // in the text input's bottom plane, left of the other controls.
+        const composer = document.querySelector(
+          ".agentkit-composer, .agent-kit-chat-footer-stack",
+        );
+        const footerButtons = composer
+          ? Array.from(composer.querySelectorAll<HTMLElement>("button"))
+          : [];
+        const firstButton = footerButtons[0];
+        if (firstButton && firstButton.parentElement) {
+          anchorParent = firstButton.parentElement;
+          anchor = firstButton;
+        }
+      }
+      if (!anchorParent || !anchor) return;
+      container = document.createElement("div");
+      container.style.display = "contents";
+      container.setAttribute("data-motion-color-inject", "true");
+      anchorParent.insertBefore(container, anchor);
+      setPortalTarget(container);
+      window.dispatchEvent(new CustomEvent("composer-color-injected"));
+    };
+    tryInject();
+    const observer = new MutationObserver(() => {
+      if (container && !container.isConnected) {
+        container = null;
+        setPortalTarget(null);
+      }
+      tryInject();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      if (container) container.remove();
+    };
+  }, []);
+  if (!portalTarget) return null;
+  return createPortal(<AgentColorMention />, portalTarget);
+}
+
 function StudioTopBar({
   center,
   right,
@@ -5930,6 +6440,7 @@ function StudioTopBar({
       </div>
       <div className="flex shrink-0 items-center justify-end gap-1">
         {right}
+        <AgentColorMention hideWhenInjected />
         <div className="relative group shrink-0">
           {/* showWhenOpen: the toolkit button vanishes once the panel is
               open, which in the studio left no visible agent control at
@@ -6008,6 +6519,14 @@ function StudioWorkspace({
   onAddElement,
   onAddAsset,
   onAddPath,
+  onRenameElement,
+  onRemoveElement,
+  onEditText,
+  onEditImageSource,
+  onEditPath,
+  onEditAttributes,
+  onToggleLock,
+  onToggleHide,
 }: {
   animation: MotionAnimation;
   title: string;
@@ -6028,6 +6547,14 @@ function StudioWorkspace({
   onAddElement?: (type: AddableElement) => void;
   onAddAsset?: (asset: AssetInsert) => void;
   onAddPath?: (points: Array<{ x: number; y: number }>, closed: boolean) => void;
+  onRenameElement?: (node: TreeNode) => void;
+  onRemoveElement?: (node: TreeNode) => void;
+  onEditText?: (node: TreeNode) => void;
+  onEditImageSource?: (node: TreeNode) => void;
+  onEditPath?: (node: TreeNode) => void;
+  onEditAttributes?: (node: TreeNode) => void;
+  onToggleLock?: (node: TreeNode) => void;
+  onToggleHide?: (node: TreeNode) => void;
 }) {
   const artboardSize = useMemo(
     () => parseSvgSize(animation.svg ?? ""),
@@ -6050,6 +6577,27 @@ function StudioWorkspace({
   // both read it — declaring it lower caused a TDZ crash at render time,
   // because the sync effect's dependency array is evaluated during render.
   const [multiSelection, setMultiSelection] = useState<string[]>([]);
+  // Right-clicked canvas element for the canvas context menu. This is the
+  // same TreeNode the Elements tree builds (same path format), so the
+  // shared ElementContextMenuItems component below renders the exact same
+  // menu the tree row shows, with the same actions.
+  const [canvasMenuNode, setCanvasMenuNode] = useState<TreeNode | null>(null);
+  const canvasTree = useMemo(
+    () => parseElementTree(animation.svg ?? ""),
+    [animation.svg],
+  );
+  const canvasMoveTargets = useMemo<MoveTarget[]>(() => {
+    if (!canvasTree) return [];
+    const targets: MoveTarget[] = [];
+    const walk = (node: TreeNode, depth: number) => {
+      if (node.tag.toLowerCase() === "g" && node.id) {
+        targets.push({ id: node.id, label: node.id, depth, path: node.path });
+      }
+      node.children.forEach((child) => walk(child, depth + 1));
+    };
+    walk(canvasTree, 0);
+    return targets;
+  }, [canvasTree]);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const imageDragDepthRef = useRef(0);
   const { prompt, dialog: imagePromptDialog } = usePromptDialog();
@@ -6148,6 +6696,246 @@ function StudioWorkspace({
     await onSave({ ...animation, title, svg: nextSvg, tracks: nextTracks, duration, loop });
     onSelectElement?.(newId);
     toast.success(`Duplicated #${oldId}`);
+  };
+
+  // Canvas context-menu actions: the same actions the Elements tree menu
+  // offers, implemented here because the tree's handlers live in
+  // ElementsRail (a sibling, not an ancestor of the canvas). They operate
+  // on animation.svg by path, exactly like the tree handlers, so an
+  // id-less element works here too.
+  const canvasWriteSvg = async (doc: Document, selectId: string | null) => {
+    const nextSvg = new XMLSerializer().serializeToString(doc.documentElement);
+    await onSave({ ...animation, title, svg: nextSvg });
+    onSelectElement?.(selectId);
+  };
+
+  const handleCanvasAskAi = (node: TreeNode) => {
+    if (node.id) onSelectElement?.(node.id);
+    askAgentAboutElement({
+      element: { tag: node.tag, id: node.id, path: node.path },
+      label: getElementLabel(node),
+      projectId: animation.id,
+      projectTitle: title || animation.title,
+      svg: animation.svg,
+      tracks: animation.tracks,
+    });
+  };
+
+  const handleCanvasGroup = async (node: TreeNode) => {
+    if (!animation || !node.path) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    // Group the multi-selection when the right-clicked element is part of
+    // it (matching the tree menu), otherwise just this element.
+    const ids =
+      node.id && multiSelection.length > 1 && multiSelection.includes(node.id)
+        ? multiSelection
+        : null;
+    // getElementById returns HTMLElement | null, getElementByPath returns
+    // Element | null. Normalize to (Element | null)[] first, so one filter
+    // with `el is Element` is a valid predicate and narrows away null.
+    // Filtering each branch separately left the union un-narrowed, which
+    // is what produced the indexOf/contains/compareDocumentPosition errors.
+    const rawElements: (Element | null)[] = ids
+      ? ids.map((id) => doc.getElementById(id))
+      : [getElementByPath(doc, node.path)];
+    const elements = rawElements.filter((el): el is Element => Boolean(el));
+    const unique = elements.filter(
+      (element, index) =>
+        elements.indexOf(element) === index &&
+        !elements.some(
+          (other) => other !== element && other.contains(element),
+        ),
+    );
+    if (unique.length === 0) return;
+    const anchor = unique[0]!;
+    if (anchor === doc.documentElement) return;
+    const parent = anchor.parentElement;
+    if (!parent) return;
+    const ordered = [...unique].sort((a, b) => {
+      if (a === b) return 0;
+      return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+        ? -1
+        : 1;
+    });
+    const group = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+    let id = `group-${Math.random().toString(36).slice(2, 6)}`;
+    while (doc.getElementById(id)) {
+      id = `group-${Math.random().toString(36).slice(2, 6)}`;
+    }
+    group.setAttribute("id", id);
+    parent.insertBefore(group, anchor);
+    ordered.forEach((element) => group.appendChild(element));
+    await canvasWriteSvg(doc, id);
+  };
+
+  const handleCanvasUngroup = async (node: TreeNode) => {
+    if (!animation || !node.path) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const element = getElementByPath(doc, node.path);
+    if (!element || element.nodeName.toLowerCase() !== "g") return;
+    const parent = element.parentElement;
+    if (!parent) return;
+    if (!element.hasChildNodes()) {
+      toast.error("This group is empty.");
+      return;
+    }
+    const id = element.getAttribute("id");
+    if (id && animation.tracks.some((track) => track.target === id)) {
+      toast.error("Remove this group's animation tracks before ungrouping.");
+      return;
+    }
+    const firstChildId =
+      element.firstElementChild?.getAttribute("id") ?? null;
+    while (element.firstChild) {
+      parent.insertBefore(element.firstChild, element);
+    }
+    parent.removeChild(element);
+    await canvasWriteSvg(doc, firstChildId);
+  };
+
+  const handleCanvasMove = async (
+    node: TreeNode,
+    targetPath: string | null,
+  ) => {
+    if (!animation || !node.path) return;
+    if (
+      targetPath !== null &&
+      (targetPath === node.path || targetPath.startsWith(`${node.path}/`))
+    ) {
+      return;
+    }
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const element = getElementByPath(doc, node.path);
+    const target =
+      targetPath === null
+        ? doc.documentElement
+        : getElementByPath(doc, targetPath);
+    if (!element || !target || element === doc.documentElement) return;
+    if (
+      target !== doc.documentElement &&
+      target.nodeName.toLowerCase() !== "g"
+    ) {
+      return;
+    }
+    if (element.contains(target)) return;
+    target.appendChild(element);
+    await canvasWriteSvg(doc, node.id || null);
+  };
+
+  const handleCanvasBring = async (
+    node: TreeNode,
+    kind: "front" | "forward" | "backward" | "back",
+  ) => {
+    if (!animation || !node.path) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const element = getElementByPath(doc, node.path);
+    if (!element || element === doc.documentElement) return;
+    const parent = element.parentElement;
+    if (!parent) return;
+    if (kind === "front") {
+      parent.appendChild(element);
+      await canvasWriteSvg(doc, node.id || null);
+      toast.success("Brought to front");
+      return;
+    }
+    if (kind === "back") {
+      const firstPaintChild = Array.from(parent.children).find(
+        (child) =>
+          !IGNORED_TAGS.has(child.nodeName.toLowerCase()) &&
+          child.nodeName.toLowerCase() !== "defs",
+      );
+      if (firstPaintChild) {
+        parent.insertBefore(element, firstPaintChild);
+      } else {
+        parent.prepend(element);
+      }
+      await canvasWriteSvg(doc, node.id || null);
+      toast.success("Sent to back");
+      return;
+    }
+    const siblings = getTreeChildren(parent);
+    const currentIndex = siblings.indexOf(element);
+    if (kind === "forward") {
+      if (currentIndex === -1 || currentIndex === siblings.length - 1) return;
+      const nextSibling = siblings[currentIndex + 1];
+      if (nextSibling && nextSibling.nextSibling) {
+        parent.insertBefore(element, nextSibling.nextSibling);
+      } else if (nextSibling) {
+        parent.appendChild(element);
+      }
+    } else {
+      if (currentIndex <= 0) return;
+      const prevSibling = siblings[currentIndex - 1];
+      if (prevSibling) {
+        parent.insertBefore(element, prevSibling);
+      }
+    }
+    await canvasWriteSvg(doc, node.id || null);
+  };
+
+  // Right-click on an artwork element: build the tree node for the exact
+  // element under the cursor (by walking up to the svg root and recording
+  // each level's index among visible tree children — the same path
+  // parseElementTree builds), select it, and let the Radix menu below
+  // open for it. Right-clicking empty artboard, the artboard root, or a
+  // defs/mask/clip element clears the node, so no stale menu appears.
+  const handleStageContextMenu = (e: React.MouseEvent) => {
+    const stage = stageRef.current;
+    if (!stage) {
+      setCanvasMenuNode(null);
+      return;
+    }
+    const svg = stage.querySelector("svg");
+    if (!svg) {
+      setCanvasMenuNode(null);
+      return;
+    }
+    const rawTarget = e.target as Element | null;
+    if (
+      !rawTarget ||
+      !svg.contains(rawTarget) ||
+      rawTarget === svg ||
+      rawTarget.closest("defs, mask, clipPath")
+    ) {
+      setCanvasMenuNode(null);
+      return;
+    }
+    const parts: number[] = [];
+    let cur: Element | null = rawTarget;
+    while (cur && cur !== svg) {
+      // Explicit annotation: without it TS infers parent from cur, and cur
+      // is reassigned to parent at the end of the loop, a circular
+      // inference that surfaces as TS7022 (implicit any).
+      const parent: Element | null = cur.parentElement;
+      if (!parent) {
+        setCanvasMenuNode(null);
+        return;
+      }
+      const siblings = getTreeChildren(parent);
+      const idx = siblings.indexOf(cur);
+      if (idx === -1) {
+        setCanvasMenuNode(null);
+        return;
+      }
+      parts.unshift(idx);
+      cur = parent;
+    }
+    if (cur !== svg) {
+      setCanvasMenuNode(null);
+      return;
+    }
+    const node: TreeNode = {
+      tag: rawTarget.tagName.toLowerCase(),
+      id: rawTarget.getAttribute("id") || "",
+      path: parts.join("/"),
+      hasChildren: getTreeChildren(rawTarget).length > 0,
+      children: [],
+    };
+    setCanvasMenuNode(node);
+    if (node.id) {
+      onSelectElement?.(node.id);
+      setMultiSelection([node.id]);
+    }
   };
 
   const handleAlign = async (type: "left" | "center-h" | "right" | "top" | "middle" | "bottom") => {
@@ -8294,6 +9082,8 @@ function StudioWorkspace({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <ComposerColorInjector />
+      <ComposerMentionStyler />
       <StudioTopBar
         center={
           <div className="flex h-8 items-center gap-2">
@@ -8674,9 +9464,12 @@ function StudioWorkspace({
                 : { backgroundColor: "#ffffff" }
             }
           >
+            <ContextMenuPrimitive.Root>
+              <ContextMenuPrimitive.Trigger asChild>
             <div
               ref={stageRef}
               onPointerDown={handleStagePointerDown}
+              onContextMenu={handleStageContextMenu}
               onPointerMove={(e) => {
                 if (tool !== "pen") return;
                 const svg = stageRef.current?.querySelector("svg");
@@ -8718,6 +9511,46 @@ function StudioWorkspace({
                 })()
               }}
             />
+              </ContextMenuPrimitive.Trigger>
+              {canvasMenuNode ? (
+                <ContextMenuPrimitive.Portal>
+                  <ContextMenuPrimitive.Content className="z-50 min-w-[190px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-80">
+                    <ElementContextMenuItems
+                      node={canvasMenuNode}
+                      isLocked={Boolean(canvasMenuNode.id && lockedIds?.has(canvasMenuNode.id))}
+                      isHidden={Boolean(canvasMenuNode.id && hiddenIds?.has(canvasMenuNode.id))}
+                      moveTargets={
+                        canvasMenuNode.path
+                          ? canvasMoveTargets.filter(
+                              (target) =>
+                                target.path !== canvasMenuNode.path &&
+                                !target.path.startsWith(`${canvasMenuNode.path}/`),
+                            )
+                          : []
+                      }
+                      onAskAi={handleCanvasAskAi}
+                      onRename={(node) => onRenameElement?.(node)}
+                      onDelete={(node) => onRemoveElement?.(node)}
+                      onEditText={(node) => onEditText?.(node)}
+                      onEditImageSource={(node) => onEditImageSource?.(node)}
+                      onEditPath={(node) => onEditPath?.(node)}
+                      onEditAttributes={(node) => onEditAttributes?.(node)}
+                      onGroupElement={(node) => void handleCanvasGroup(node)}
+                      onUngroupElement={(node) => void handleCanvasUngroup(node)}
+                      onMoveElement={(node, targetPath) =>
+                        void handleCanvasMove(node, targetPath)
+                      }
+                      onBringToFront={(node) => void handleCanvasBring(node, "front")}
+                      onBringForward={(node) => void handleCanvasBring(node, "forward")}
+                      onSendBackward={(node) => void handleCanvasBring(node, "backward")}
+                      onSendToBack={(node) => void handleCanvasBring(node, "back")}
+                      onToggleLock={(node) => onToggleLock?.(node)}
+                      onToggleHide={(node) => onToggleHide?.(node)}
+                    />
+                  </ContextMenuPrimitive.Content>
+                </ContextMenuPrimitive.Portal>
+              ) : null}
+            </ContextMenuPrimitive.Root>
             {/* Grid overlay */}
             {showGrid ? (
               <svg
