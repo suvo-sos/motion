@@ -94,6 +94,13 @@ function LayoutShell({ children }: LayoutProps) {
   const settingsOwnsChrome = isSettingsPathname(location.pathname);
   // The motion editor is a full-bleed studio: no app sidebar or header.
   const isStudioRoute = location.pathname.startsWith("/motion");
+  // Home never shows the agent sidebar, full stop. AgentInspector restores
+  // the sidebar's persisted open state (storageKey="chat") on mount, so
+  // merely asking it to close on the way back from a project did not work:
+  // Layout unmounts AgentInspector on /motion, so on returning to /home it
+  // mounted fresh, never saw the /motion -> /home transition, and reopened
+  // from stored state. Not mounting it on /home at all is the guarantee.
+  const isHomeRoute = location.pathname === HOME_PATH;
   const chatHomeHandoffActive = useAgentChatHomeHandoff({
     storageKey: "chat",
     activePath: location.pathname,
@@ -108,6 +115,20 @@ function LayoutShell({ children }: LayoutProps) {
 
   useEffect(() => {
     setMobileSidebarOpen(false);
+  }, [location.pathname]);
+
+  // Belt and braces for any toolkit-level agent sidebar that lives outside
+  // AgentInspector: tell it to close whenever home is entered. This lives
+  // here, not in AgentInspector, because LayoutShell stays mounted across
+  // routes while AgentInspector is unmounted on /motion — an effect inside
+  // AgentInspector can never observe the return trip.
+  useEffect(() => {
+    if (location.pathname !== HOME_PATH) return;
+    window.dispatchEvent(
+      new CustomEvent("agent-chat:close-sidebar", {
+        detail: { source: "navigation-to-home" },
+      }),
+    );
   }, [location.pathname]);
 
   useEffect(() => {
@@ -213,6 +234,9 @@ function LayoutShell({ children }: LayoutProps) {
           >
             {contentFrame}
           </div>
+        ) : isHomeRoute ? (
+          // Home has its own composer; it does not get the agent sidebar.
+          contentFrame
         ) : (
           <AgentInspector
             chatHomeHandoffActive={chatHomeHandoffActive}

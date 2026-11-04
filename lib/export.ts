@@ -1,4 +1,5 @@
 import { toAnimatedSvg, type MotionAnimation, type AnimatedSvgOptions } from "./motion";
+import { sanitizeSvg } from "./sanitize";
 
 export type ExportFormat = "svg" | "webcss" | "js" | "copy";
 
@@ -154,6 +155,14 @@ function escapeHtml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Titles are plain text. Strip markup — including script bodies — so an
+    exported page never echoes a payload back, even in an escaped context. */
+function plainText(s: string) {
+  return (s || "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<[^>]*>/g, "");
+}
+
 export function exportSvg(anim: MotionAnimation, options?: ExportRenderOptions): ExportResult {
   let svg = toAnimatedSvg(anim, options);
   
@@ -197,7 +206,11 @@ ${svg}
 export function exportJs(anim: MotionAnimation, options?: ExportRenderOptions): ExportResult {
   const speed = Math.max(0.1, options?.speed ?? 1);
   const trigger = options?.trigger ?? "load";
-  let svg = anim.svg;
+  const frameRate = Math.max(1, Math.round(options?.frameRate ?? 60));
+  const loop = options?.loop ?? anim.loop;
+  // The JS export embeds the artwork directly, so it gets the same shared
+  // sanitiser as the stage and the CSS export — not the raw saved SVG.
+  let svg = sanitizeSvg(anim.svg);
   const bg = options?.canvasBg;
   if (bg && bg !== "none") {
     const vbMatch = svg.match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
@@ -216,13 +229,18 @@ export function exportJs(anim: MotionAnimation, options?: ExportRenderOptions): 
     const link = options.hyperlink.trim();
     svg = svg.replace(/(<svg[^>]*>)([\s\S]*)(<\/svg>)/, (m, open, inner, close) => `${open}<a href="${link}" target="_blank" rel="noopener noreferrer">${inner}</a>${close}`);
   }
-  const data = JSON.stringify(anim);
+  // Escape < in the embedded JSON so a title or value containing
+  // "</script>" cannot close the player's own <script> tag early. The
+  // JSON parser still reads \u003c as <, so the data is unchanged.
+  // The title is plain text, so markup never reaches the exported page.
+  const title = plainText(anim.title) || "Animation";
+  const data = JSON.stringify({ ...anim, title, svg }).replace(/</g, "\\u003c");
   const content = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(anim.title || "Animation")}</title>
+<title>${escapeHtml(title)}</title>
 <style>
   html, body { margin: 0; min-height: 100%; }
   body { display: grid; place-items: center; min-height: 100vh; background: #f5f5f5; }
@@ -242,6 +260,11 @@ function cubicBezier(x1, y1, x2, y2) {
 }
 
 function easeProgress(ease, p) {
+  // WARNING: this player is a copy of lib/motion.ts's engine, kept here
+  // because the export must be self-contained. When the engine changes,
+  // update this copy too — lib/motion.test.ts checks the export for hold
+  // and colour handling so drift fails a test instead of shipping silently.
+  if (ease === "hold") return 0;
   if (!ease || ease === "linear") return p;
   if (ease === "ease-in") return p * p;
   if (ease === "ease-out") return 1 - (1 - p) * (1 - p);
@@ -264,6 +287,35 @@ function easeProgress(ease, p) {
   return p;
 }
 
+function parseColor(value) {
+  if (typeof value !== "string") return null;
+  const s = value.trim().toLowerCase();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s);
+  if (hex) {
+    const h = hex[1];
+    const expand = (c) => parseInt(c + c, 16);
+    if (h.length === 3) return { r: expand(h[0]), g: expand(h[1]), b: expand(h[2]), a: 1 };
+    if (h.length === 4) return { r: expand(h[0]), g: expand(h[1]), b: expand(h[2]), a: expand(h[3]) / 255 };
+    if (h.length === 6) return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 1 };
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: parseInt(h.slice(6, 8), 16) / 255 };
+  }
+  const rgb = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(s);
+  if (rgb) return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]), a: rgb[4] === undefined ? 1 : Number(rgb[4]) };
+  return null;
+}
+
+function lerpColor(a, b, p) {
+  const r = Math.round(a.r + (b.r - a.r) * p);
+  const g = Math.round(a.g + (b.g - a.g) * p);
+  const bl = Math.round(a.b + (b.b - a.b) * p);
+  const alpha = a.a + (b.a - a.a) * p;
+  if (alpha >= 1) {
+    const hex = (v) => v.toString(16).padStart(2, "0");
+    return "#" + hex(r) + hex(g) + hex(bl);
+  }
+  return "rgba(" + r + ", " + g + ", " + bl + ", " + (Math.round(alpha * 100) / 100) + ")";
+}
+
 function sampleTrack(track, t) {
   const kfs = [...track.keyframes].sort((a, b) => a.t - b.t);
   const first = kfs[0]; const last = kfs[kfs.length - 1];
@@ -278,6 +330,8 @@ function sampleTrack(track, t) {
       const raw = (t - a.t) / span;
       const p = easeProgress(a.ease, raw);
       if (typeof a.v === "number" && typeof b.v === "number") return a.v + (b.v - a.v) * p;
+      const ca = parseColor(a.v); const cb = parseColor(b.v);
+      if (ca && cb) return lerpColor(ca, cb, p);
       return p < 0.5 ? a.v : b.v;
     }
   }
@@ -374,19 +428,28 @@ function applyAt(root, tracks, t) {
 }
 
 let start = null;
-const duration = animation.duration / speed;
-const frameInterval = 1000 / (options?.frameRate ?? 60);
+const duration = animation.duration / ${speed};
+// frameRate/loop are baked in as literals by exportJs above. The old code
+// read an undefined options variable here, which threw a ReferenceError
+// and meant the JS export never animated at all. (No backticks in this
+// embedded script: a backtick would end the template literal above.)
+const frameInterval = 1000 / ${frameRate};
+const shouldLoop = ${loop};
 let lastApply = 0;
 function frame(now) {
   if (!start) start = now;
   if (now - lastApply < frameInterval) { requestAnimationFrame(frame); return; }
   lastApply = now;
-  const elapsed = (now - start) % duration;
-  const t = elapsed / duration;
+  const elapsed = now - start;
+  if (!shouldLoop && elapsed >= duration) {
+    applyAt(document, animation.tracks || [], 1);
+    return;
+  }
+  const t = shouldLoop ? (elapsed % duration) / duration : elapsed / duration;
   applyAt(document, animation.tracks || [], t);
   requestAnimationFrame(frame);
 }
-const triggerMode = trigger;
+const triggerMode = ${JSON.stringify(trigger)};
 function startAnim() { requestAnimationFrame(frame); }
 if (triggerMode === "hover") {
   const stageEl = document.getElementById("stage");

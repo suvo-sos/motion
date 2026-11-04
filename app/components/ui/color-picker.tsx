@@ -164,7 +164,7 @@ export function ColorPicker({
   /** Accessible label for the swatch variant (also shown on hover). */
   label?: string;
   /** Colours already used in the current file, shown as a document palette. */
-  documentColors?: string[];
+  documentColors?: string[] | undefined;
 }) {
   const [draft, setDraft] = useState(value);
   const [open, setOpen] = useState(false);

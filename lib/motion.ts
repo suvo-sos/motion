@@ -1,3 +1,5 @@
+import { sanitizeSvg } from "./sanitize";
+
 export type Property =
   | "translateX"
   | "translateY"
@@ -345,6 +347,9 @@ function cubicBezier(_x1: number, y1: number, _x2: number, y2: number) {
 }
 
 function easeProgress(ease: string | undefined, p: number): number {
+  // Hold: stay on the left keyframe's value for the whole segment, then
+  // jump at the next keyframe. Exported as steps(1, end) below.
+  if (ease === "hold") return 0;
   if (!ease || ease === "linear") return p;
   if (ease === "ease-in") return p * p;
   if (ease === "ease-out") return 1 - (1 - p) * (1 - p);
@@ -607,11 +612,17 @@ function declaration(property: Property, v: number | string): string {
   }
 }
 
+/** CSS timing function for an easing name. "hold" is not a CSS timing
+    function, so it is exported as steps(1, end): hold, then jump. */
+function cssTimingFunction(ease: string): string {
+  return ease === "hold" ? "steps(1, end)" : ease;
+}
+
 function keyframeCss(track: Track): string {
   return withEnds(track)
     .map((k) => {
       const percent = Math.round(k.t * 1000) / 10;
-      const ease = k.ease ? ` animation-timing-function: ${k.ease};` : "";
+      const ease = k.ease ? ` animation-timing-function: ${cssTimingFunction(k.ease)};` : "";
       return `  ${percent}% {${ease} ${declaration(track.property, k.v)} }`;
     })
     .join("\n");
@@ -627,7 +638,7 @@ function easeAt(t: number, tracks: Track[]): string {
   const source = tracks
     .flatMap((track) => track.keyframes)
     .find((k) => Math.abs(k.t - t) < 1e-6);
-  return source?.ease ? ` animation-timing-function: ${source.ease};` : "";
+  return source?.ease ? ` animation-timing-function: ${cssTimingFunction(source.ease)};` : "";
 }
 
 function transformFrame(t: number, tracks: Track[]): string {
@@ -815,7 +826,9 @@ export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOption
     if (parts.length > 1) reducedRules.push(`#${safeId} { ${parts.join(" ")} }`);
   }
   const css = [...blocks, ...rules, ...(reducedRules.length > 0 ? [`@media (prefers-reduced-motion: reduce) {\n${reducedRules.join("\n")}\n}`] : [])].join("\n");
-  let svg = anim.svg;
+  // Sanitise before the generated <style> block is appended below, so the
+  // export's own style is not mistaken for source content.
+  let svg = sanitizeSvg(anim.svg);
   if (!/\sxmlns=/.test(svg)) {
     svg = svg.replace(/<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"');
   }

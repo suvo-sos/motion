@@ -58,6 +58,106 @@
   }
 }
 
+/* Chat input send and voice-chat buttons: blue. The composer itself
+   is toolkit-owned (AgentKitComposer in HomePage / ChatRouteContent),
+   so there is no app-owned button to restyle — this override targets
+   the toolkit composer's submit/send button only, by type and by its
+   Send aria-label, in both the home composer and the chat sidebar,
+   and the same composer's voice button, by its Voice aria-label.
+   Other composer buttons (attach, etc.) are untouched. If the toolkit
+   renames a button, this is the block to update. */
+.agentkit-composer-stack button[type="submit"],
+.agentkit-composer-stack button[aria-label="Send"],
+.agentkit-composer-stack button[aria-label="Send message"],
+.agentkit-composer button[type="submit"],
+.agentkit-composer button[aria-label="Send"],
+.agentkit-composer button[aria-label="Send message"],
+.agent-kit-chat-footer-stack button[type="submit"],
+.agent-kit-chat-footer-stack button[aria-label="Send"],
+.agent-kit-chat-footer-stack button[aria-label="Send message"] {
+  background-color: #2391ff !important;
+  border-color: transparent !important;
+  color: #fff !important;
+}
+.agentkit-composer-stack button[type="submit"] svg,
+.agentkit-composer-stack button[aria-label="Send"] svg,
+.agentkit-composer-stack button[aria-label="Send message"] svg,
+.agentkit-composer button[type="submit"] svg,
+.agentkit-composer button[aria-label="Send"] svg,
+.agentkit-composer button[aria-label="Send message"] svg,
+.agent-kit-chat-footer-stack button[type="submit"] svg,
+.agent-kit-chat-footer-stack button[aria-label="Send"] svg,
+.agent-kit-chat-footer-stack button[aria-label="Send message"] svg {
+  color: #fff !important;
+}
+.agentkit-composer-stack button[type="submit"]:hover:not(:disabled),
+.agentkit-composer-stack button[aria-label="Send"]:hover:not(:disabled),
+.agentkit-composer-stack button[aria-label="Send message"]:hover:not(:disabled),
+.agentkit-composer button[type="submit"]:hover:not(:disabled),
+.agentkit-composer button[aria-label="Send"]:hover:not(:disabled),
+.agentkit-composer button[aria-label="Send message"]:hover:not(:disabled),
+.agent-kit-chat-footer-stack button[type="submit"]:hover:not(:disabled),
+.agent-kit-chat-footer-stack button[aria-label="Send"]:hover:not(:disabled),
+.agent-kit-chat-footer-stack button[aria-label="Send message"]:hover:not(:disabled) {
+  background-color: #1a7de6 !important;
+}
+.agentkit-composer-stack button[type="submit"]:disabled,
+.agentkit-composer-stack button[aria-label="Send"]:disabled,
+.agentkit-composer-stack button[aria-label="Send message"]:disabled,
+.agentkit-composer button[type="submit"]:disabled,
+.agentkit-composer button[aria-label="Send"]:disabled,
+.agentkit-composer button[aria-label="Send message"]:disabled,
+.agent-kit-chat-footer-stack button[type="submit"]:disabled,
+.agent-kit-chat-footer-stack button[aria-label="Send"]:disabled,
+.agent-kit-chat-footer-stack button[aria-label="Send message"]:disabled {
+  background-color: rgb(35 145 255 / 0.4) !important;
+  color: #fff !important;
+  opacity: 1 !important;
+}
+
+/* Voice-chat button in the same composer: same blue treatment as
+   send. Matched by Voice in the aria-label/title, since the toolkit
+   does not expose a voice button class to the app. */
+.agentkit-composer-stack button[aria-label*="Voice"],
+.agentkit-composer-stack button[aria-label*="voice"],
+.agentkit-composer-stack button[title*="Voice"],
+.agentkit-composer button[aria-label*="Voice"],
+.agentkit-composer button[aria-label*="voice"],
+.agentkit-composer button[title*="Voice"],
+.agent-kit-chat-footer-stack button[aria-label*="Voice"],
+.agent-kit-chat-footer-stack button[aria-label*="voice"],
+.agent-kit-chat-footer-stack button[title*="Voice"] {
+  background-color: #2391ff !important;
+  border-color: transparent !important;
+  color: #fff !important;
+}
+.agentkit-composer-stack button[aria-label*="Voice"] svg,
+.agentkit-composer-stack button[aria-label*="voice"] svg,
+.agentkit-composer button[aria-label*="Voice"] svg,
+.agentkit-composer button[aria-label*="voice"] svg,
+.agent-kit-chat-footer-stack button[aria-label*="Voice"] svg,
+.agent-kit-chat-footer-stack button[aria-label*="voice"] svg {
+  color: #fff !important;
+}
+.agentkit-composer-stack button[aria-label*="Voice"]:hover:not(:disabled),
+.agentkit-composer-stack button[aria-label*="voice"]:hover:not(:disabled),
+.agentkit-composer button[aria-label*="Voice"]:hover:not(:disabled),
+.agentkit-composer button[aria-label*="voice"]:hover:not(:disabled),
+.agent-kit-chat-footer-stack button[aria-label*="Voice"]:hover:not(:disabled),
+.agent-kit-chat-footer-stack button[aria-label*="voice"]:hover:not(:disabled) {
+  background-color: #1a7de6 !important;
+}
+.agentkit-composer-stack button[aria-label*="Voice"]:disabled,
+.agentkit-composer-stack button[aria-label*="voice"]:disabled,
+.agentkit-composer button[aria-label*="Voice"]:disabled,
+.agentkit-composer button[aria-label*="voice"]:disabled,
+.agent-kit-chat-footer-stack button[aria-label*="Voice"]:disabled,
+.agent-kit-chat-footer-stack button[aria-label*="voice"]:disabled {
+  background-color: rgb(35 145 255 / 0.4) !important;
+  color: #fff !important;
+  opacity: 1 !important;
+}
+
 .agentkit-chat-empty-copy {
   text-align: center;
 }

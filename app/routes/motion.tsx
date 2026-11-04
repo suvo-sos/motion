@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useSearchParams } from "react-router";
+import { createPortal } from "react-dom";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import {
   useActionQuery,
@@ -81,6 +82,10 @@ import { MousePointer2, Hand, PenTool, Edit, Scale } from "lucide-react";
 import { Frame, Palette, Grid2x2 } from "lucide-react";
 import { Anchor } from "lucide-react";
 import { SvgExportDialog } from "../components/SvgExportDialog";
+import {
+  AssetLibraryPopover,
+  type AssetInsert,
+} from "../components/AssetLibraryPopover";
 // polygon-clipping is loaded dynamically inside handleBooleanOp, not as a
 // static import: a missing node_modules entry must not crash the whole
 // studio route at load time (it did — 'Cannot find module' on dev start
@@ -135,6 +140,7 @@ import {
   type Track,
 } from "../../lib/motion";
 import { runExport, type ExportFormat, type ExportRenderOptions } from "../../lib/export";
+import { sanitizeSvg } from "../../lib/sanitize";
 import {
   getMotionEditorActions,
   publishMotionEditor,
@@ -196,7 +202,34 @@ const EASING_OPTIONS = [
   { value: "cubic-bezier(0.34,1.56,0.64,1)", label: "Overshoot" },
   { value: "cubic-bezier(0.22,1,0.36,1)", label: "Expo out" },
   { value: "cubic-bezier(0.16,1,0.3,1)", label: "Smooth" },
+  { value: "hold", label: "Hold (step)" },
 ];
+
+/** Parse a cubic-bezier easing string, or null for named/linear/hold. */
+function parseCubicBezier(ease?: string): [number, number, number, number] | null {
+  if (!ease) return null;
+  const m = ease.match(/cubic-bezier\(([^)]+)\)/);
+  if (!m?.[1]) return null;
+  const parts = m[1].split(",").map((n) => parseFloat(n.trim()));
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+  return parts as [number, number, number, number];
+}
+
+/** Motion-preserving cubic equivalent of a named easing, for conversion to
+    a hand-editable bezier. Linear maps to (0,0,1,1); its handles sit on the
+    keyframes until the numeric fields move them away. */
+function cubicBezierForEase(ease?: string): [number, number, number, number] {
+  const parsed = parseCubicBezier(ease);
+  if (parsed) return parsed;
+  if (ease === "ease-in") return [0.42, 0, 1, 1];
+  if (ease === "ease-out") return [0, 0, 0.58, 1];
+  if (ease === "ease-in-out") return [0.42, 0, 0.58, 1];
+  return [0, 0, 1, 1];
+}
+
+function formatCubicBezier(c: [number, number, number, number]): string {
+  return `cubic-bezier(${c.map((n) => Math.round(n * 100) / 100).join(",")})`;
+}
 
 const FONT_WEIGHT_OPTIONS = [
   { value: "100", label: "Thin · 100" },
@@ -474,6 +507,16 @@ export default function MotionRoute() {
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
   const [timelineHeight, setTimelineHeight] = useState(256);
+  // Sidebar width is user-resizable (drag its right edge): the old fixed
+  // w-64 (256px) was the other half of the hidden-names problem — no
+  // matter how the tree was laid out, the user could not give it more
+  // room. Persisted so it survives reloads; double-click the edge to
+  // reset to 256px.
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    if (typeof window === "undefined") return 256;
+    const saved = Number(window.localStorage.getItem("motion-studio-sidebar-width"));
+    return Number.isFinite(saved) && saved >= 200 && saved <= 480 ? saved : 256;
+  });
   const undoRef = useRef<() => void>(() => {});
   const redoRef = useRef<() => void>(() => {});
   const [canUndo, setCanUndo] = useState(false);
@@ -604,11 +647,21 @@ export default function MotionRoute() {
 
   // The studio is a two-up: the board and the agent. Make sure the agent
   // panel is open when the studio mounts, even on a fresh profile.
+  // A single dispatch can be missed if the sidebar's listener is not
+  // attached yet when the studio first mounts (slow chunk load), leaving
+  // the studio with no side agent and no visible way back to it — so
+  // dispatch on mount and retry twice. Opening an already-open panel is
+  // a no-op, so the retries are harmless.
   useEffect(() => {
-    const timer = window.setTimeout(() => {
+    const openAgentPanel = () =>
       window.dispatchEvent(new CustomEvent("agent-panel:open"));
-    }, 400);
-    return () => window.clearTimeout(timer);
+    openAgentPanel();
+    const retry400 = window.setTimeout(openAgentPanel, 400);
+    const retry1500 = window.setTimeout(openAgentPanel, 1500);
+    return () => {
+      window.clearTimeout(retry400);
+      window.clearTimeout(retry1500);
+    };
   }, []);
 
   const createSample = async () => {
@@ -1055,6 +1108,98 @@ export default function MotionRoute() {
   };
 
   /**
+   * Insert a built-in or My Assets library asset. The asset markup is
+   * drawn on its own viewBox grid (built-ins are 100 x 100); it is wrapped
+   * in a <g> scaled to the same centre size as a new shape, so it lands
+   * at a sensible size on any artboard and is selected, ready to drag or
+   * animate. Ids inside the asset are remapped on collision, the same way
+   * the SVG import remaps them, so a gradient or mask id cannot clash
+   * with one already on the canvas.
+   */
+  const handleAddAsset = async (asset: AssetInsert) => {
+    if (!animation) return;
+    const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
+    const svgEl = doc.documentElement;
+    const vb = svgEl.getAttribute("viewBox")?.split(/\s+/).map(Number) || [0, 0, 200, 200];
+    const vbX = vb[0] ?? 0;
+    const vbY = vb[1] ?? 0;
+    const vbWidth = vb[2] || 200;
+    const vbHeight = vb[3] || 200;
+    const cx = vbX + vbWidth / 2;
+    const cy = vbY + vbHeight / 2;
+    const size = Math.max(24, Math.round(Math.min(vbWidth, vbHeight) * 0.34));
+    const assetW = asset.vbW > 0 ? asset.vbW : 100;
+    const assetH = asset.vbH > 0 ? asset.vbH : 100;
+    const scale = size / Math.max(assetW, assetH);
+    const round = (value: number) => Math.round(value * 100) / 100;
+    const id = `${asset.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "asset"}-${Math.random()
+      .toString(36)
+      .substring(2, 6)}`;
+    const group = doc.createElementNS(SVG_NS, "g");
+    group.setAttribute("id", id);
+    group.setAttribute(
+      "transform",
+      `translate(${round(cx - (assetW * scale) / 2)} ${round(cy - (assetH * scale) / 2)}) scale(${round(scale)})`,
+    );
+    const assetDoc = new DOMParser().parseFromString(
+      `<svg xmlns="${SVG_NS}" viewBox="0 0 ${assetW} ${assetH}">${asset.svg}</svg>`,
+      "image/svg+xml",
+    );
+    const assetRoot = assetDoc.documentElement;
+    if (!assetRoot || assetRoot.nodeName.toLowerCase() !== "svg") return;
+    const existingIds = new Set<string>();
+    doc.querySelectorAll("[id]").forEach((el) => {
+      const existing = el.getAttribute("id");
+      if (existing) existingIds.add(existing);
+    });
+    const idMap = new Map<string, string>();
+    assetRoot.querySelectorAll("[id]").forEach((el) => {
+      const oldId = el.getAttribute("id");
+      if (!oldId) return;
+      if (existingIds.has(oldId) || idMap.has(oldId)) {
+        let next = `${oldId}-asset`;
+        let n = 2;
+        while (existingIds.has(next) || Array.from(idMap.values()).includes(next)) {
+          next = `${oldId}-asset-${n++}`;
+        }
+        idMap.set(oldId, next);
+        el.setAttribute("id", next);
+      } else {
+        existingIds.add(oldId);
+      }
+    });
+    if (idMap.size > 0) {
+      assetRoot.querySelectorAll("*").forEach((el) => {
+        Array.from(el.attributes).forEach((attr) => {
+          let v = attr.value;
+          idMap.forEach((next, oldId) => {
+            v = v.split(`url(#${oldId})`).join(`url(#${next})`);
+            if (attr.name === "href" || attr.name === "xlink:href") {
+              v = v.split(`#${oldId}`).join(`#${next}`);
+            }
+          });
+          if (v !== attr.value) el.setAttribute(attr.name, v);
+        });
+      });
+    }
+    Array.from(assetRoot.children).forEach((child) => {
+      group.appendChild(doc.importNode(child, true));
+    });
+    const selected = selectedElementId
+      ? doc.getElementById(selectedElementId)
+      : null;
+    const host =
+      selected && selected.nodeName.toLowerCase() === "g" ? selected : svgEl;
+    host.appendChild(group);
+    const nextSvg = new XMLSerializer().serializeToString(svgEl);
+    await saveAnimation({ ...animation, svg: nextSvg });
+    setSelectedElementId(id);
+  };
+
+  /**
    * Commit a freehand path drawn with the pen tool. Points are artboard units;
    * the pen closes the path when the user clicks the first point again.
    */
@@ -1088,7 +1233,9 @@ export default function MotionRoute() {
     } else {
       pathEl.setAttribute("fill", "none");
       pathEl.setAttribute("stroke", SHAPE_STROKE);
-      pathEl.setAttribute("stroke-width", "3");
+      // Pen lines were 3, then 2 units; 1 is thinner and matches the
+      // preview. Still artwork units, so it scales with zoom.
+      pathEl.setAttribute("stroke-width", "1");
       pathEl.setAttribute("stroke-linecap", "round");
       pathEl.setAttribute("stroke-linejoin", "round");
     }
@@ -1171,9 +1318,32 @@ export default function MotionRoute() {
   return (
     <div className="flex h-full w-full min-w-0 overflow-hidden bg-background text-foreground">
       <div
-        className="flex w-64 shrink-0 flex-col border-r border-sidebar-border"
-        style={{ paddingBottom: timelineHeight }}
+        className="relative flex shrink-0 flex-col border-r border-sidebar-border"
+        style={{ paddingBottom: timelineHeight, width: sidebarWidth }}
       >
+        {/* Drag handle: resize the sidebar, double-click to reset. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          title="Drag to resize sidebar · double-click to reset"
+          style={{ height: `calc(100% - ${timelineHeight}px)` }}
+          className="absolute right-0 top-0 z-10 w-1.5 cursor-col-resize touch-none transition-colors hover:bg-[#2391FF]/50 active:bg-[#2391FF]"
+          onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
+          onPointerMove={(e) => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            const left = e.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
+            setSidebarWidth(Math.min(480, Math.max(200, Math.round(e.clientX - left))));
+          }}
+          onPointerUp={(e) => {
+            const width = e.currentTarget.parentElement?.getBoundingClientRect().width;
+            if (width) window.localStorage.setItem("motion-studio-sidebar-width", String(Math.round(width)));
+          }}
+          onDoubleClick={() => {
+            setSidebarWidth(256);
+            window.localStorage.removeItem("motion-studio-sidebar-width");
+          }}
+        />
         <LeftSidebarWithTabs
           animation={liveAnimation ?? null}
           title={title}
@@ -1201,6 +1371,7 @@ export default function MotionRoute() {
           onRedo={() => redoRef.current?.()}
           canUndo={canUndo}
           canRedo={canRedo}
+          sidebarWidth={sidebarWidth}
         />
       </div>
 
@@ -1236,6 +1407,7 @@ export default function MotionRoute() {
             onSave={saveAnimation}
             timelineHeight={timelineHeight}
             onTimelineHeightChange={setTimelineHeight}
+            sidebarWidth={sidebarWidth}
             onRegisterUndoRedo={(u, r) => {
               undoRef.current = u;
               redoRef.current = r;
@@ -1250,6 +1422,7 @@ export default function MotionRoute() {
             lockedIds={lockedIds}
             onAddImage={handleAddImage}
             onAddElement={handleAddElement}
+            onAddAsset={handleAddAsset}
             onAddPath={handleAddPath}
           />
         )}
@@ -1351,35 +1524,43 @@ function getHiddenAndLockedIds(svg: string): { hidden: Set<string>; locked: Set<
   return { hidden, locked };
 }
 
+// Icons are rendered inside a small tinted chip in the row (see ElementRow),
+// so the type is readable at a glance instead of a row of solid-colour
+// blobs: one colour family per type, icon in the same family, chip in a
+// 10% tint of it. `bg` must stay a literal Tailwind class per branch —
+// a dynamically built class name would never be generated.
 function getElementIcon(tag: string, isExpanded: boolean) {
   const t = tag.toLowerCase();
   switch (t) {
     case "svg":
-      return { Icon: IconFrame, color: "text-blue-500 dark:text-blue-400" };
+      return { Icon: IconFrame, color: "text-blue-500 dark:text-blue-400", bg: "bg-blue-500/10" };
     case "g":
       return {
         Icon: isExpanded ? IconFolderOpenFilled : IconFolderFilled,
         color: "text-amber-500 dark:text-amber-400",
+        bg: "bg-amber-500/10",
       };
     case "image":
     case "img":
-      return { Icon: IconPhotoFilled, color: "text-sky-500 dark:text-sky-400" };
+      return { Icon: IconPhotoFilled, color: "text-sky-500 dark:text-sky-400", bg: "bg-sky-500/10" };
+    case "use":
+      return { Icon: IconLinkFilled, color: "text-cyan-500 dark:text-cyan-400", bg: "bg-cyan-500/10" };
     case "rect":
     case "foreignobject":
-      return { Icon: IconSquareFilled, color: "text-emerald-500 dark:text-emerald-400" };
+      return { Icon: IconSquareFilled, color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500/10" };
     case "circle":
     case "ellipse":
-      return { Icon: IconCircleFilled, color: "text-violet-500 dark:text-violet-400" };
+      return { Icon: IconCircleFilled, color: "text-violet-500 dark:text-violet-400", bg: "bg-violet-500/10" };
     case "path":
     case "polygon":
     case "polyline":
     case "line":
-      return { Icon: IconVector, color: "text-indigo-500 dark:text-indigo-400" };
+      return { Icon: IconVector, color: "text-indigo-500 dark:text-indigo-400", bg: "bg-indigo-500/10" };
     case "text":
     case "tspan":
-      return { Icon: IconLetterT, color: "text-rose-500 dark:text-rose-400" };
+      return { Icon: IconLetterT, color: "text-rose-500 dark:text-rose-400", bg: "bg-rose-500/10" };
     default:
-      return { Icon: IconShape, color: "text-muted-foreground" };
+      return { Icon: IconShape, color: "text-muted-foreground", bg: "bg-sidebar-accent" };
   }
 }
 
@@ -1429,8 +1610,18 @@ function parsePointsAttr(value: string): { x: number; y: number }[] {
   return pts;
 }
 
-const TREE_INDENT = 16;
-const TREE_BASE = 8;
+// Tree indent, kept small and capped: at 16px/level a group nested 8 deep
+// ate 136px of a 256px sidebar before the name even started, so deep
+// element names were truncated to nothing. Compact density pass: 10px/
+// level, 4px base, capped at 6 levels (max 64px of indent). Deeper nodes
+// still render under their parent, just without further sideways drift.
+// TreeLines and ElementRow must both use treeIndentX() so the guide rails
+// line up with the chevron at every depth.
+const TREE_INDENT = 10;
+const TREE_BASE = 4;
+const TREE_MAX_DEPTH = 6;
+const treeIndentX = (depth: number) =>
+  TREE_BASE + Math.min(depth, TREE_MAX_DEPTH) * TREE_INDENT;
 
 type PathSegment = { cmd: string; nums: number[] };
 
@@ -1788,7 +1979,9 @@ function ElementThumb({
 
 function TreeLines({
   depth,
-  isLast,
+  // Kept in the props so callers don't change; the elbow connectors that
+  // used it are gone, so it is intentionally unused here.
+  isLast: _isLast,
   ancestorContinues,
 }: {
   depth: number;
@@ -1797,37 +1990,33 @@ function TreeLines({
 }) {
   if (depth === 0) return null;
 
-  // Rails line up with the centre of the chevron at each ancestor level.
-  const railX = (level: number) => TREE_BASE + level * TREE_INDENT + 7;
-  const currentX = railX(depth - 1);
+  // Guide rails, done properly this time: one vertical rail per ancestor,
+  // at that ancestor's own chevron centre, drawn only while that ancestor
+  // still has siblings below it. The previous loop paired rail X for
+  // level N with the continuation flag for level N+1, so rails sat one
+  // indent left of the chevron they were supposed to line up with —
+  // another reason the old tree looked off. ancestorContinues[a] is the
+  // continuation flag for the ancestor at depth a (renderNode sets
+  // nextAncestorContinues[depth] = !isLast for each node's children),
+  // so the loop below is direct: rail for depth a iff it continues.
+  // Chevron is 16px wide, so its centre is 8px into the row's indent.
+  const railX = (level: number) => treeIndentX(level) + 8;
 
   return (
     <div
       className="pointer-events-none absolute inset-0 select-none"
       aria-hidden="true"
     >
-      {Array.from({ length: Math.max(0, depth - 1) }).map((_, level) => {
-        if (!ancestorContinues[level + 1]) return null;
+      {Array.from({ length: depth }).map((_, level) => {
+        if (!ancestorContinues[level]) return null;
         return (
           <span
             key={level}
-            className="absolute top-0 bottom-0 w-px bg-sidebar-border"
+            className="absolute top-0 bottom-0 w-px bg-sidebar-foreground/15"
             style={{ left: railX(level) }}
           />
         );
       })}
-
-      {/* Connector for this node: ├── when it has siblings below, └── when last. */}
-      <span
-        className={`absolute w-px bg-sidebar-border ${
-          isLast ? "top-0 h-1/2" : "top-0 bottom-0"
-        }`}
-        style={{ left: currentX }}
-      />
-      <span
-        className="absolute top-1/2 h-px bg-sidebar-border"
-        style={{ left: currentX, width: 9 }}
-      />
     </div>
   );
 }
@@ -1902,7 +2091,7 @@ function ElementRow({
   onSendBackward: (node: TreeNode) => void;
   onSendToBack: (node: TreeNode) => void;
 }) {
-  const { Icon, color } = getElementIcon(node.tag, !isCollapsed);
+  const { Icon, color, bg } = getElementIcon(node.tag, !isCollapsed);
   const nodeKey = node.id || node.path;
   const label = getElementLabel(node);
   const isGroup = node.tag.toLowerCase() === "g";
@@ -1912,14 +2101,17 @@ function ElementRow({
     <ContextMenuPrimitive.Root>
       <ContextMenuPrimitive.Trigger asChild>
         <div
-          className={`group relative flex h-7 select-none items-center rounded-[5px] pr-1 text-[12px] transition-colors ${
+          className={`group relative flex h-6 cursor-pointer select-none items-center rounded-[5px] pr-1 text-[12px] transition-colors ${
+            // Rows had no cursor-pointer before, so hovering a clickable
+            // row still showed the plain arrow — part of why the tree
+            // felt dead. Selection now also gets the blue left bar on
+            // every selected row, not just the primary one, so a
+            // multi-selection actually reads as selected.
             isSelected
-              ? `bg-[#2391FF]/10 font-medium text-sidebar-accent-foreground ${
-                  isPrimary ? "shadow-[inset_2px_0_0_#2391FF]" : ""
-                }`
-              : "text-sidebar-foreground hover:bg-sidebar-accent/50"
+              ? "bg-[#2391FF]/10 font-medium text-sidebar-accent-foreground shadow-[inset_2px_0_0_#2391FF]"
+              : "text-sidebar-foreground hover:bg-sidebar-accent"
           } ${isHidden ? "opacity-55" : ""}`}
-          style={{ paddingLeft: TREE_BASE + depth * TREE_INDENT }}
+          style={{ paddingLeft: treeIndentX(depth) }}
           title={`${label} · ${node.tag}`}
           onClick={(event) => {
             // Tapping a row in Elements selects it on canvas, even if the
@@ -1949,7 +2141,7 @@ function ElementRow({
                 e.stopPropagation();
                 onToggleCollapse(nodeKey);
               }}
-              className="mr-1 grid size-3.5 shrink-0 place-items-center rounded-sm text-sidebar-foreground/50 transition-colors hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground"
+              className="mr-1 grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-sidebar-foreground/60 transition-colors hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground"
               title={isCollapsed ? "Expand" : "Collapse"}
             >
               {isCollapsed ? (
@@ -1959,12 +2151,20 @@ function ElementRow({
               )}
             </button>
           ) : (
-            <span className="mr-1 size-3.5 shrink-0" />
+            <span className="mr-1 size-4 shrink-0" />
           )}
 
-          {/* Element-type icon */}
+          {/* Element-type icon, in its tinted chip (see getElementIcon).
+              Compact density: 16px chevron, 18px chip, 4px gap — the
+              spacer for childless rows matches the chevron, so icons
+              stay aligned. */}
           <span
-            className={`mr-1.5 grid size-4 shrink-0 place-items-center ${color}`}
+            className={`mr-1 grid size-[18px] shrink-0 place-items-center rounded-[5px] ${bg} ${color} ${
+              // The primary selection (the one the Properties panel shows)
+              // still gets its own marker now that every selected row has
+              // the blue left bar: a blue ring around its type chip.
+              isPrimary ? "ring-1 ring-[#2391FF]/50" : ""
+            }`}
           >
             <ElementThumb src={imageSrc} Icon={Icon} />
           </span>
@@ -1979,24 +2179,29 @@ function ElementRow({
           </span>
 
           {isGroup && node.children.length > 0 ? (
-            <span className="ml-1.5 shrink-0 text-[10px] tabular-nums text-sidebar-foreground/40">
+            <span className="ml-1 shrink-0 text-[10px] tabular-nums text-sidebar-foreground/40">
               {node.children.length}
             </span>
           ) : null}
 
           {hasTracks ? (
             <span
-              className="ml-1.5 size-1.5 shrink-0 rounded-full bg-[#2391FF]"
+              className="ml-1 size-1.5 shrink-0 rounded-full bg-[#2391FF]"
               title="Animated"
             />
           ) : null}
 
           {node.id ? (
+            // Previously these buttons were opacity-0 but still in layout,
+            // so every row permanently lost ~44px of name width to invisible
+            // lock/hide buttons. Now they are out of layout until hover
+            // (or always shown when locked/hidden), giving the name the
+            // full row width when you are just reading the tree.
             <div
-              className={`ml-auto flex shrink-0 items-center gap-0.5 pl-1 transition-opacity ${
+              className={`ml-auto shrink-0 items-center gap-0.5 pl-1 ${
                 alwaysShowActions
-                  ? "opacity-100"
-                  : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                  ? "flex"
+                  : "hidden group-hover:flex group-focus-within:flex"
               }`}
             >
               <button
@@ -2523,11 +2728,14 @@ function PropertiesPanel({
     const gradId = existingId && gradientInfo?.type === type ? existingId : `grad-${Math.random().toString(36).substring(2, 6)}`;
     applyDocUpdate((doc, el) => {
       const defs = ensureDefs(doc);
-      let grad = doc.getElementById(gradId);
-      if (!grad || grad.tagName.toLowerCase() !== type) {
+      const existingGrad = doc.getElementById(gradId);
+      let grad: Element;
+      if (!existingGrad || existingGrad.tagName.toLowerCase() !== type) {
         grad = doc.createElementNS("http://www.w3.org/2000/svg", type);
         grad.setAttribute("id", gradId);
         defs.appendChild(grad);
+      } else {
+        grad = existingGrad;
       }
       if (type === "lineargradient") {
         const rad = (angle * Math.PI) / 180;
@@ -2583,11 +2791,14 @@ function PropertiesPanel({
     const patId = patternInfo?.id || `pattern-${Math.random().toString(36).substring(2, 6)}`;
     applyDocUpdate((doc, el) => {
       const defs = ensureDefs(doc);
-      let pat = doc.getElementById(patId);
-      if (!pat || pat.tagName.toLowerCase() !== "pattern") {
+      const existingPat = doc.getElementById(patId);
+      let pat: Element;
+      if (!existingPat || existingPat.tagName.toLowerCase() !== "pattern") {
         pat = doc.createElementNS("http://www.w3.org/2000/svg", "pattern");
         pat.setAttribute("id", patId);
         defs.appendChild(pat);
+      } else {
+        pat = existingPat;
       }
       pat.setAttribute("patternUnits", "userSpaceOnUse");
       pat.setAttribute("width", String(size));
@@ -2633,9 +2844,9 @@ function PropertiesPanel({
     const markerId = `marker-${kind}-${position}`;
     applyDocUpdate((doc, el) => {
       const defs = ensureDefs(doc);
-      let marker = doc.getElementById(markerId);
-      if (!marker) {
-        marker = doc.createElementNS("http://www.w3.org/2000/svg", "marker");
+      const existingMarker = doc.getElementById(markerId);
+      if (!existingMarker) {
+        const marker = doc.createElementNS("http://www.w3.org/2000/svg", "marker");
         marker.setAttribute("id", markerId);
         marker.setAttribute("markerWidth", "10");
         marker.setAttribute("markerHeight", "10");
@@ -2705,9 +2916,9 @@ function PropertiesPanel({
     const filterId = `filter-${safeId}`;
     applyDocUpdate((doc, el) => {
       const defs = ensureDefs(doc);
-      let filter = doc.getElementById(filterId);
-      if (!filter) {
-        filter = doc.createElementNS("http://www.w3.org/2000/svg", "filter");
+      const existingFilter = doc.getElementById(filterId);
+      const filter = existingFilter ?? doc.createElementNS("http://www.w3.org/2000/svg", "filter");
+      if (!existingFilter) {
         filter.setAttribute("id", filterId);
         filter.setAttribute("x", "-20%");
         filter.setAttribute("y", "-20%");
@@ -4086,6 +4297,7 @@ function LeftSidebarWithTabs({
   onRedo,
   canUndo = true,
   canRedo = true,
+  sidebarWidth = 256,
 }: {
   animation: MotionAnimation | null;
   title?: string;
@@ -4113,8 +4325,14 @@ function LeftSidebarWithTabs({
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  /** Width of the resizable sidebar, used to collapse the tab labels. */
+  sidebarWidth?: number;
 }) {
-  const [activeTab, setActiveTab] = useState<"elements" | "properties">("elements");
+  const [activeTab, setActiveTab] = useState<"elements" | "properties" | "keyframe">("elements");
+  // Below 320px the three labels (especially "Properties") no longer fit
+  // next to an icon in three equal buttons, so the tabs collapse to icons
+  // only. The icon still carries the tab name as its title and aria-label.
+  const compactTabs = sidebarWidth < 320;
   const treeSelectionRef = useRef<string | null>(null);
 
   const handleTreeSelection = (id: string | null) => {
@@ -4131,15 +4349,31 @@ function LeftSidebarWithTabs({
     treeSelectionRef.current = null;
   }, [selectedElementId]);
 
+  // Tapping a timeline diamond opens the Keyframe tab, so the editor is
+  // visible immediately instead of hiding behind the current tab.
+  useEffect(() => {
+    const openKeyframeTab = () => setActiveTab("keyframe");
+    window.addEventListener("keyframe-editor:open", openKeyframeTab);
+    return () => window.removeEventListener("keyframe-editor:open", openKeyframeTab);
+  }, []);
+
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* Header with title and undo/redo */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-sidebar-border px-2">
-        <Link to="/home" className="shrink-0">
-          <AgentNativeIcon
-            aria-hidden="true"
-            className="h-3.5 w-6 text-sidebar-accent-foreground"
-          />
+        {/* Home button. This used to be a bare 24x14 icon with no label,
+            no hover state and no tooltip, so clicking anywhere near the
+            top-left corner — but not exactly on those 14 pixels — did
+            nothing, and nothing told you it was the way home. It is now
+            a full 32px button with a hover background and a Home tooltip,
+            so the whole corner target goes to /home. */}
+        <Link
+          to="/home"
+          title="Home"
+          aria-label="Go home"
+          className="grid size-8 shrink-0 place-items-center rounded-md text-sidebar-accent-foreground transition-colors hover:bg-sidebar-accent"
+        >
+          <AgentNativeIcon aria-hidden="true" className="h-3.5 w-6" />
         </Link>
         <div className="min-w-0 flex-1 leading-none">
           <input
@@ -4168,7 +4402,7 @@ function LeftSidebarWithTabs({
         </button>
       </div>
 
-      {/* Elements / Properties segmented control */}
+      {/* Elements / Properties / Keyframe segmented control */}
       <div className="shrink-0 border-b border-sidebar-border bg-sidebar p-1.5">
         <ButtonGroup className="w-full">
           <Button
@@ -4177,13 +4411,16 @@ function LeftSidebarWithTabs({
             size="sm"
             onClick={() => setActiveTab("elements")}
             aria-pressed={activeTab === "elements"}
-            className={`h-8 flex-1 text-[12px] font-medium ${
+            aria-label="Elements"
+            title="Elements"
+            className={`h-8 flex-1 gap-1.5 px-2 text-[12px] font-medium ${
               activeTab === "elements"
                 ? "border-[#2391FF] bg-[#2391FF] text-white hover:bg-[#1f83e6] hover:text-white dark:border-[#2391FF] dark:bg-[#2391FF] dark:hover:bg-[#1f83e6]"
                 : "bg-transparent text-sidebar-foreground hover:bg-sidebar-accent dark:bg-transparent"
             }`}
           >
-            Elements
+            <IconFolderFilled className="size-4 shrink-0" />
+            {compactTabs ? null : "Elements"}
           </Button>
           <Button
             type="button"
@@ -4191,13 +4428,33 @@ function LeftSidebarWithTabs({
             size="sm"
             onClick={() => setActiveTab("properties")}
             aria-pressed={activeTab === "properties"}
-            className={`h-8 flex-1 text-[12px] font-medium ${
+            aria-label="Properties"
+            title="Properties"
+            className={`h-8 flex-1 gap-1.5 px-2 text-[12px] font-medium ${
               activeTab === "properties"
                 ? "border-[#2391FF] bg-[#2391FF] text-white hover:bg-[#1f83e6] hover:text-white dark:border-[#2391FF] dark:bg-[#2391FF] dark:hover:bg-[#1f83e6]"
                 : "bg-transparent text-sidebar-foreground hover:bg-sidebar-accent dark:bg-transparent"
             }`}
           >
-            Properties
+            <IconAdjustmentsHorizontalFilled className="size-4 shrink-0" />
+            {compactTabs ? null : "Properties"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab("keyframe")}
+            aria-pressed={activeTab === "keyframe"}
+            aria-label="Keyframe"
+            title="Keyframe"
+            className={`h-8 flex-1 gap-1.5 px-2 text-[12px] font-medium ${
+              activeTab === "keyframe"
+                ? "border-[#2391FF] bg-[#2391FF] text-white hover:bg-[#1f83e6] hover:text-white dark:border-[#2391FF] dark:bg-[#2391FF] dark:hover:bg-[#1f83e6]"
+                : "bg-transparent text-sidebar-foreground hover:bg-sidebar-accent dark:bg-transparent"
+            }`}
+          >
+            <IconDiamondFilled className="size-4 shrink-0" />
+            {compactTabs ? null : "Keyframe"}
           </Button>
         </ButtonGroup>
       </div>
@@ -4233,7 +4490,7 @@ function LeftSidebarWithTabs({
             canRedo={canRedo}
             hideHeader={true}
           />
-        ) : (
+        ) : activeTab === "properties" ? (
           <PropertiesPanel
             animation={animation}
             selectedElementId={selectedElementId}
@@ -4241,6 +4498,18 @@ function LeftSidebarWithTabs({
             {...(onPreviewSvg ? { onPreviewSvg } : {})}
             onSelectElement={onSelectElement}
           />
+        ) : (
+          <div className="flex h-full flex-col overflow-y-auto">
+            <p className="shrink-0 px-3 py-2 text-[11px] text-muted-foreground">
+              Tap a diamond in the timeline to edit that keyframe.
+            </p>
+            {/* Keyframe editor slot: the timeline's KeyframeInspector renders
+                here (via a portal from StudioWorkspace) instead of floating
+                over the canvas, so editing a keyframe never covers the
+                artwork. When no keyframe is selected this tab just shows the
+                hint above. */}
+            <div id="keyframe-inspector-slot" className="min-h-0 flex-1" />
+          </div>
         )}
       </div>
     </div>
@@ -4404,11 +4673,14 @@ function ElementsRail({
       if (n.hasChildren) ids.add(n.id || n.path);
       n.children.forEach(walk);
     };
-    walk(tree);
+    // Root excluded, like totalElements/allCollapsed: it is not a row.
+    tree.children.forEach(walk);
     setCollapsedIds(ids);
   };
 
   // Count total elements in tree
+  // Counts visible rows only: the svg root is no longer rendered (see
+  // the tree scroll area below), so it must not inflate the count.
   const totalElements = useMemo(() => {
     if (!tree) return 0;
     let count = 0;
@@ -4416,10 +4688,13 @@ function ElementsRail({
       count++;
       n.children.forEach(walk);
     };
-    walk(tree);
+    tree.children.forEach(walk);
     return count;
   }, [tree]);
 
+  // Same root exclusion as totalElements: the svg root is not a
+  // collapsible row anymore, so counting it would make "all collapsed"
+  // permanently false.
   const allCollapsed = useMemo(() => {
     if (!tree) return false;
     let parents = 0;
@@ -4431,7 +4706,7 @@ function ElementsRail({
       }
       n.children.forEach(walk);
     };
-    walk(tree);
+    tree.children.forEach(walk);
     return parents > 0 && collapsedParents === parents;
   }, [tree, collapsedIds]);
 
@@ -4689,7 +4964,7 @@ function ElementsRail({
       const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
       const shapeEl = doc.getElementById(selectedIds[0]!);
       if (!shapeEl) return;
-      const targets = selectedIds.slice(1).map((id) => doc.getElementById(id)).filter((el): el is Element => Boolean(el));
+      const targets = selectedIds.slice(1).map((id) => doc.getElementById(id)).filter((el): el is HTMLElement => Boolean(el));
       if (targets.length === 0) return;
       let defs = doc.documentElement.querySelector("defs");
       if (!defs) {
@@ -4862,7 +5137,7 @@ function ElementsRail({
     const basePoly = flatten(baseEl.getAttribute("d") || "");
     const otherPoly = flatten(otherEl.getAttribute("d") || "");
     if (!basePoly || !otherPoly) { toast.error("Both paths must be closed (end with Z)."); return; }
-    let result: number[][][];
+    let result: Array<Array<Array<[number, number]>>>;
     try {
       const clipping = await import("polygon-clipping").catch(() => null);
       if (!clipping) { toast.error("polygon-clipping is not installed — run pnpm install, then restart the dev server."); return; }
@@ -4873,7 +5148,7 @@ function ElementsRail({
     const d = result.map((polygon) => polygon.map((ring) => {
       if (ring.length === 0) return "";
       return `M ${round2(ring[0]![0])} ${round2(ring[0]![1])}` + ring.slice(1).map((pt) => ` L ${round2(pt[0])} ${round2(pt[1])}`).join("") + " Z";
-    }).filter(Boolean).join(" "));
+    }).filter(Boolean).join(" ")).join(" ");
     baseEl.setAttribute("d", d);
     baseEl.setAttribute("fill-rule", "evenodd");
     otherEl.remove();
@@ -5233,11 +5508,15 @@ function ElementsRail({
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {!hideHeader && (
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-sidebar-border px-2">
-          <Link to="/home" className="shrink-0">
-            <AgentNativeIcon
-              aria-hidden="true"
-              className="h-3.5 w-6 text-sidebar-accent-foreground"
-            />
+          {/* Same Home button as the tabbed sidebar header: a full 32px
+              target with a tooltip, not a bare 24x14 icon. */}
+          <Link
+            to="/home"
+            title="Home"
+            aria-label="Go home"
+            className="grid size-8 shrink-0 place-items-center rounded-md text-sidebar-accent-foreground transition-colors hover:bg-sidebar-accent"
+          >
+            <AgentNativeIcon aria-hidden="true" className="h-3.5 w-6" />
           </Link>
           <div className="min-w-0 flex-1 leading-none">
             <input
@@ -5267,8 +5546,8 @@ function ElementsRail({
         </div>
       )}
 
-      {/* Header bar for Elements list */}
-      <div className="flex items-center justify-between border-b border-sidebar-border/40 px-3 py-2">
+      {/* Header bar for Elements list — compact, like the rows below it. */}
+      <div className="flex items-center justify-between border-b border-sidebar-border/40 px-2 py-1.5">
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-semibold uppercase tracking-wider text-sidebar-foreground/80">
             Elements
@@ -5565,7 +5844,7 @@ function ElementsRail({
 
       {/* Search filter if there are more than 4 elements */}
       {totalElements > 4 && (
-        <div className="border-b border-sidebar-border/40 px-3 py-1.5">
+        <div className="border-b border-sidebar-border/40 px-2 py-1">
           <div className="relative flex items-center">
             <IconSearchFilled className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
             <Input
@@ -5587,14 +5866,20 @@ function ElementsRail({
         </div>
       )}
 
-      {/* Scrollable Elements Tree */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      {/* Scrollable Elements Tree. The svg root ("Artboard") row is not
+          rendered: it cost a full row plus one indent level for every
+          element, and it is not an element the user edits. Top-level
+          elements render at depth 0 instead, which also makes the guide
+          rails line up with real ancestors only. */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
         {!animation ? (
           <div className="px-2 py-3 text-xs text-sidebar-foreground/60">
             Select an animation
           </div>
         ) : tree ? (
-          renderNode(tree, 0, true, [])
+          tree.children.map((child, index) =>
+            renderNode(child, 0, index === tree.children.length - 1, []),
+          )
         ) : (
           <div className="px-2 py-3 text-xs text-sidebar-foreground/60">
             No elements
@@ -5627,14 +5912,30 @@ function StudioTopBar({
   center?: ReactNode;
   right?: ReactNode;
 }) {
+  // Old layout was grid-cols-[1fr_auto_1fr] with a justify-center centre
+  // column and no overflow handling. Once the tool row + the right-hand
+  // buttons (Motion path / Stagger / Export) grew wider than the canvas
+  // column — easy after widening the sidebar, or on a narrow window —
+  // the centred content overflowed both sides, so the leftmost tools
+  // slid off the left edge of the header and could not be scrolled back.
+  // New layout: the tool row is a horizontally scrollable strip that is
+  // centred when it fits (mx-auto + w-max) and scrolls from the left when
+  // it doesn't, and the right-hand buttons are shrink-0 so they are never
+  // the ones pushed out. The scrollbar itself is hidden; the strip still
+  // scrolls with a trackpad / shift-wheel.
   return (
-    <header className="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-border bg-background px-2">
-      <div className="flex min-w-0 items-center gap-2 whitespace-nowrap" />
-      <div className="flex min-w-0 items-center justify-center">{center}</div>
-      <div className="flex items-center justify-end gap-1">
+    <header className="flex h-10 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-border bg-background px-2">
+      <div className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="mx-auto flex w-max items-center gap-2 px-1">{center}</div>
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-1">
         {right}
-        <div className="relative group">
-          <AgentToggleButton className="size-7" />
+        <div className="relative group shrink-0">
+          {/* showWhenOpen: the toolkit button vanishes once the panel is
+              open, which in the studio left no visible agent control at
+              all. Keep it visible (with its active state) so the panel
+              can always be toggled back from the studio header. */}
+          <AgentToggleButton className="size-7" showWhenOpen />
           <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Agent</span>
         </div>
       </div>
@@ -5696,6 +5997,7 @@ function StudioWorkspace({
   onSave,
   timelineHeight,
   onTimelineHeightChange,
+  sidebarWidth = 256,
   onRegisterUndoRedo,
   onHistoryChange,
   selectedElementId,
@@ -5704,6 +6006,7 @@ function StudioWorkspace({
   lockedIds,
   onAddImage,
   onAddElement,
+  onAddAsset,
   onAddPath,
 }: {
   animation: MotionAnimation;
@@ -5711,6 +6014,9 @@ function StudioWorkspace({
   onSave: (next: MotionAnimation) => Promise<void>;
   timelineHeight: number;
   onTimelineHeightChange: (height: number) => void;
+  /** Width of the resizable left sidebar, so the timeline can extend under
+      it by exactly that amount instead of a hardcoded 256px. */
+  sidebarWidth?: number;
   onRegisterUndoRedo?: (undo: () => void, redo: () => void) => void;
   /** Fired whenever undo/redo availability changes, so the sidebar buttons can fade out. */
   onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
@@ -5720,6 +6026,7 @@ function StudioWorkspace({
   lockedIds?: Set<string>;
   onAddImage?: (data: File | string) => void;
   onAddElement?: (type: AddableElement) => void;
+  onAddAsset?: (asset: AssetInsert) => void;
   onAddPath?: (points: Array<{ x: number; y: number }>, closed: boolean) => void;
 }) {
   const artboardSize = useMemo(
@@ -5729,6 +6036,13 @@ function StudioWorkspace({
   const [tracks, setTracks] = useState<Track[]>(() =>
     cloneTracks(animation.tracks ?? []),
   );
+  // Fresh-tracks ref for keyboard copy/paste/step handlers, whose effect
+  // only re-registers on selection changes — reading tracks state directly
+  // there could copy a stale value after an inspector edit.
+  const tracksRef = useRef<Track[]>(tracks);
+  useEffect(() => {
+    tracksRef.current = tracks;
+  }, [tracks]);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [duration, setDuration] = useState(animation.duration);
   const [loop, setLoop] = useState(animation.loop);
@@ -6040,8 +6354,15 @@ function StudioWorkspace({
   // primary to a member of their multi-selection). Only a primary id
   // outside the current multi-selection resets it to a single selection.
   useEffect(() => {
+    // Guard the empty case: setMultiSelection([]) creates a new array
+    // identity on every call, and multiSelection is in this effect's
+    // deps, so calling it unconditionally when nothing is selected
+    // re-ran this effect forever (React: "Maximum update depth
+    // exceeded" at motion.tsx:6158, which then also surfaced at the
+    // playback tick and the autosave store update). Only clear when
+    // there is actually something to clear.
     if (!selectedElementId) {
-      setMultiSelection([]);
+      if (multiSelection.length > 0) setMultiSelection([]);
     } else if (!multiSelection.includes(selectedElementId)) {
       setMultiSelection([selectedElementId]);
     }
@@ -6118,6 +6439,9 @@ function StudioWorkspace({
     return () => window.removeEventListener("paste", onPaste);
   }, [insertImageFile, onAddImage, animation, onSave]);
 
+  // Undo history is capped: each snapshot holds a full SVG string, so an
+  // uncapped history grows without bound over a long session.
+  const MAX_HISTORY = 100;
   const historyRef = useRef<StudioSnapshot[]>([
     {
       tracks: cloneTracks(animation.tracks ?? []),
@@ -6147,6 +6471,49 @@ function StudioWorkspace({
     onHistoryChangeRef.current?.(canUndo, canRedo);
   }, []);
 
+  // Fast snapshot equality: the old code JSON.stringified the whole
+  // snapshot (full SVG string included) on every tracks change, which is
+  // exactly the kind of work that runs during a drag. Comparing the svg
+  // string directly and walking keyframes is the same check, far cheaper.
+  const snapshotsEqual = (a: StudioSnapshot | undefined, b: StudioSnapshot): boolean => {
+    if (!a) return false;
+    if (a.svg !== b.svg || a.duration !== b.duration || a.loop !== b.loop) return false;
+    if (a.tracks.length !== b.tracks.length) return false;
+    for (let i = 0; i < a.tracks.length; i++) {
+      const ta = a.tracks[i]!;
+      const tb = b.tracks[i]!;
+      if (ta.target !== tb.target || ta.property !== tb.property) return false;
+      if (ta.keyframes.length !== tb.keyframes.length) return false;
+      for (let j = 0; j < ta.keyframes.length; j++) {
+        const ka = ta.keyframes[j]!;
+        const kb = tb.keyframes[j]!;
+        if (ka.t !== kb.t || ka.v !== kb.v || ka.ease !== kb.ease) return false;
+      }
+    }
+    return true;
+  };
+  // True when the only difference is keyframe times/values on the same
+  // tracks — the signature of a continuous drag (element drag changes v,
+  // keyframe drag changes t), not a distinct edit. Adding/removing a
+  // keyframe, changing an easing, or editing the SVG fails this check
+  // and becomes its own undo step.
+  const isValueOnlyChange = (a: StudioSnapshot | undefined, b: StudioSnapshot): boolean => {
+    if (!a) return false;
+    if (a.svg !== b.svg || a.duration !== b.duration || a.loop !== b.loop) return false;
+    if (a.tracks.length !== b.tracks.length) return false;
+    for (let i = 0; i < a.tracks.length; i++) {
+      const ta = a.tracks[i]!;
+      const tb = b.tracks[i]!;
+      if (ta.target !== tb.target || ta.property !== tb.property) return false;
+      if (ta.keyframes.length !== tb.keyframes.length) return false;
+      for (let j = 0; j < ta.keyframes.length; j++) {
+        const ka = ta.keyframes[j]!;
+        const kb = tb.keyframes[j]!;
+        if (ka.ease !== kb.ease) return false;
+      }
+    }
+    return true;
+  };
   useEffect(() => {
     if (skipRef.current) {
       skipRef.current = false;
@@ -6159,16 +6526,26 @@ function StudioWorkspace({
       loop,
       svg: animation.svg ?? "",
     };
-    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    if (snapshotsEqual(current, next)) return;
 
     const now = performance.now();
-    // Coalesce the flood of updates from one continuous gesture (dragging an
-    // element, resizing, scrubbing the duration) into a single undo step.
-    if (now - lastHistoryAtRef.current < 500 && indexRef.current > 0) {
+    // Coalesce only a continuous gesture, and only within 500ms: a drag
+    // changes values on the same tracks in a flood of updates, and that
+    // flood should be one undo step. A structural change (delete, add a
+    // keyframe, group, rename) is a new step even if it lands within
+    // 500ms of the last one — the old time-only rule merged those.
+    if (
+      now - lastHistoryAtRef.current < 500 &&
+      indexRef.current > 0 &&
+      isValueOnlyChange(current, next)
+    ) {
       historyRef.current[indexRef.current] = next;
     } else {
       historyRef.current = historyRef.current.slice(0, indexRef.current + 1);
       historyRef.current.push(next);
+      if (historyRef.current.length > MAX_HISTORY) {
+        historyRef.current = historyRef.current.slice(historyRef.current.length - MAX_HISTORY);
+      }
       indexRef.current = historyRef.current.length - 1;
     }
     lastHistoryAtRef.current = now;
@@ -6394,6 +6771,27 @@ function StudioWorkspace({
     publishMotionEditor({ tracks, time, duration });
   }, [tracks, time, duration]);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Left-sidebar Keyframe tab slot for the keyframe editor: the sidebar
+  // is a sibling component and the slot only exists while the Keyframe tab
+  // is open, so a MutationObserver re-finds it whenever tabs switch. The
+  // inspector is portalled into it instead of floating over the canvas.
+  // It stays owned here, so its handlers and live track data are
+  // unchanged — only where it renders moves. Setting the same node again
+  // is a React bailout, so the observer's frequent callbacks stay cheap.
+  const [keyframeSlot, setKeyframeSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const findSlot = () =>
+      setKeyframeSlot(document.getElementById("keyframe-inspector-slot"));
+    findSlot();
+    const observer = new MutationObserver(findSlot);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
+  // Tapping a timeline diamond switches the sidebar to the Keyframe tab.
+  useEffect(() => {
+    if (selection) window.dispatchEvent(new Event("keyframe-editor:open"));
+  }, [selection]);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -6503,11 +6901,11 @@ function StudioWorkspace({
     timeRef.current = clamped;
   };
 
-  const addKeyframe = (trackIndex: number, at: number = time) => {
+  const addKeyframe = (trackIndex: number, at: number = time, suppliedValue?: number | string) => {
     const track = tracks[trackIndex];
     if (!track) return;
     const t = Math.max(0, Math.min(1, at));
-    const value = sampleTrack(track, t);
+    const value = suppliedValue !== undefined ? suppliedValue : sampleTrack(track, t);
     const keyframes = [
       ...track.keyframes.filter((k) => Math.abs(k.t - t) > 0.001),
       { t, v: value },
@@ -6575,6 +6973,56 @@ function StudioWorkspace({
     }
   };
 
+  // Pro keyframe workflow: copy/paste and prev/next stepping. The clipboard
+  // is internal (not the system clipboard), so pasting a keyframe never
+  // triggers the canvas SVG/image paste path. Paste targets the currently
+  // selected track at the playhead, carrying the copied value and easing.
+  const copiedKeyframeRef = useRef<{ v: number | string; ease?: string } | null>(null);
+  const [hasCopiedKeyframe, setHasCopiedKeyframe] = useState(false);
+  const copyKeyframe = () => {
+    if (!selection) return;
+    const kf = tracksRef.current[selection.track]?.keyframes[selection.keyframe];
+    if (!kf) return;
+    copiedKeyframeRef.current = { v: kf.v, ...(kf.ease ? { ease: kf.ease } : {}) };
+    setHasCopiedKeyframe(true);
+    toast.success("Keyframe copied");
+  };
+  const pasteKeyframe = () => {
+    if (!selection || !copiedKeyframeRef.current) return;
+    const copied = copiedKeyframeRef.current;
+    const t = Math.max(0, Math.min(1, timeRef.current));
+    const track = tracksRef.current[selection.track];
+    if (!track) return;
+    const keyframes = [
+      ...track.keyframes.filter((k) => Math.abs(k.t - t) > 0.001),
+      { t, v: copied.v, ...(copied.ease ? { ease: copied.ease } : {}) },
+    ].sort((a, b) => a.t - b.t);
+    setTracks((prev) =>
+      prev.map((tr, i) => (i === selection.track ? { ...tr, keyframes } : tr)),
+    );
+    setSelection({
+      track: selection.track,
+      keyframe: Math.max(0, keyframes.findIndex((k) => Math.abs(k.t - t) <= 0.0001)),
+    });
+    setTime(t);
+    timeRef.current = t;
+  };
+  const stepKeyframe = (dir: -1 | 1) => {
+    if (!selection) return;
+    const track = tracksRef.current[selection.track];
+    if (!track) return;
+    // Step in time order, not raw index order: dragging a keyframe past
+    // another does not re-sort the track's keyframe array.
+    const order = track.keyframes
+      .map((k, i) => ({ t: k.t, i }))
+      .sort((a, b) => a.t - b.t);
+    const pos = order.findIndex((o) => o.i === selection.keyframe);
+    const next = order[pos + dir];
+    if (pos === -1 || !next) return;
+    setSelection({ track: selection.track, keyframe: next.i });
+    scrub(next.t);
+  };
+
   // Keyboard group / ungroup / flip / centre-selection, implemented here
   // (canvas selection lives in this component) rather than in ElementsRail.
   const groupCanvasSelection = useCallback(() => {
@@ -6582,7 +7030,7 @@ function StudioWorkspace({
     const ids = multiSelection.length > 0 ? multiSelection : selectedElementId ? [selectedElementId] : [];
     if (ids.length === 0) return;
     const doc = new DOMParser().parseFromString(animation.svg, "image/svg+xml");
-    const elements = ids.map((id) => doc.getElementById(id)).filter((el): el is Element => Boolean(el));
+    const elements = ids.map((id) => doc.getElementById(id)).filter((el): el is HTMLElement => Boolean(el));
     if (elements.length === 0) return;
     const parent = elements[0]!.parentElement;
     if (!parent || !elements.every((el) => el.parentElement === parent)) {
@@ -6686,8 +7134,86 @@ function StudioWorkspace({
   // the corner handles, so dragging a corner resizes and dragging the body
   // moves, with no mode switch in between.
   const [tool, setTool] = useState<"transform" | "hand" | "pen" | "node">("transform");
+  // Auto-keyframe: the explicit answer to "dragging mints a track".
+  // ON (default, old behaviour): canvas drag/resize writes the track at
+  // the playhead, creating a timed move when the playhead is mid-clip.
+  // OFF (Pose): canvas drag/resize moves the element's static pose — a
+  // new track is flat, an existing track's keyframes all take the dragged
+  // value — so it never silently adds a timed move. Drag/resize effects
+  // read this through the ref, because their closures do not re-register
+  // when the toggle changes.
+  const [autoKeyframe, setAutoKeyframe] = useState(true);
+  const autoKeyframeRef = useRef(true);
+  autoKeyframeRef.current = autoKeyframe;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // Zoom range for tiny tweaks and for overview: the old 0.2x–4x range
+  // and fixed 0.25 steps meant zooming to a single node took forever
+  // (additive steps shrink in relative terms as zoom grows) and zooming
+  // out to a whole large artboard stopped at 20%. 5%–6400% with
+  // multiplicative steps fixes both: every step is a fixed percentage,
+  // so it feels the same at 0.1x and at 32x.
+  const MIN_ZOOM = 0.05;
+  const MAX_ZOOM = 64;
+  // Zoom, optionally anchored at a cursor point: the point under the
+  // cursor stays under the cursor. The old wheel zoom scaled about the
+  // centre, so the detail you were aiming at flew away as you zoomed
+  // in. With no cursor given (buttons, keyboard) it zooms about the
+  // centre, i.e. pan is left alone.
+  const zoomAt = (nextRaw: number, clientX?: number, clientY?: number) => {
+    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(nextRaw * 100) / 100));
+    if (clientX === undefined || clientY === undefined) {
+      setZoom(next);
+      return;
+    }
+    const viewer = viewerRef.current;
+    if (!viewer) {
+      setZoom(next);
+      return;
+    }
+    const rect = viewer.getBoundingClientRect();
+    const sx = clientX - rect.left - rect.width / 2;
+    const sy = clientY - rect.top - rect.height / 2;
+    const ratio = next / (zoom || 1);
+    setZoom(next);
+    setPan((prev) => ({
+      x: Math.round(sx - (sx - prev.x) * ratio),
+      y: Math.round(sy - (sy - prev.y) * ratio),
+    }));
+  };
+  // Node-overlay sizing, in screen pixels: the overlay SVG lives inside
+  // the CSS scale(zoom) wrapper, so a 1-unit stroke is zoom px on screen
+  // — at the fitted zoom of ~3x, the old 1.5-unit strokes were ~4.5px and
+  // the r=3 dots were ~18px across. Dividing by zoom keeps handles at a
+  // constant screen size (1px lines, 6px dots) at any zoom, like Figma.
+  const nodeU = 1 / (zoom || 1);
+
+  // Fit the artboard to the viewer on open. At a fixed zoom of 1 a
+  // 200x200 artboard sits tiny in a ~1000px viewer, which is why opening
+  // a canvas looked zoomed out. Fit so the artboard fills 85% of the
+  // smaller viewer dimension, clamped to 0.5x–3x (wheel zoom still goes
+  // 0.2x–4x). Pan stays 0,0: the viewer flex-centres the artboard and
+  // the transform origin is its centre, so 0,0 is already centred.
+  // This runs once per project open only — StudioWorkspace is keyed by
+  // animation.id — never on edits, or every SVG change would yank the
+  // user's manual zoom back. The Reset view button reuses it too.
+  const fitView = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const rect = viewer.getBoundingClientRect();
+    const w = artboardSize.w || 200;
+    const h = artboardSize.h || 200;
+    if (rect.width <= 0 || rect.height <= 0 || w <= 0 || h <= 0) return;
+    const fit = Math.min(rect.width / w, rect.height / h) * 0.85;
+    setZoom(Math.min(3, Math.max(0.5, Math.round(fit * 100) / 100)));
+    setPan({ x: 0, y: 0 });
+  }, [artboardSize]);
+  const fittedRef = useRef(false);
+  useEffect(() => {
+    if (fittedRef.current) return;
+    fittedRef.current = true;
+    fitView();
+  }, [fitView]);
   const [showGrid, setShowGrid] = useState(false);
   const [gridSize, setGridSize] = useState(20);
   const [snapToGrid, setSnapToGrid] = useState(false);
@@ -6707,7 +7233,7 @@ function StudioWorkspace({
   // Pen tool state. A point may carry bezier handles from a click-drag:
   // out = outgoing handle of this anchor, in = incoming handle (mirrored
   // from out for a smooth anchor, so a dragged curve stays smooth).
-  type PenPoint = { x: number; y: number; outX?: number; outY?: number; inX?: number; inY?: number };
+  type PenPoint = { x: number; y: number; outX?: number | undefined; outY?: number | undefined; inX?: number | undefined; inY?: number | undefined };
   const [penPoints, setPenPoints] = useState<PenPoint[]>([]);
   const [penHover, setPenHover] = useState<{ x: number; y: number } | null>(null);
   const penPointsRef = useRef<PenPoint[]>([]);
@@ -7106,18 +7632,41 @@ function StudioWorkspace({
         (tr) => tr.target === targetId && tr.property === prop,
       );
       if (trackIndex === -1) {
+        // New track, mid-clip, auto-keyframe on: a timed move, not a flat
+        // one — the element sits at its base value at 0 and 1 and at the
+        // dragged value at the playhead. At the ends (or in Pose mode) a
+        // flat track is the right constant pose.
+        const base = prop === "scale" || prop === "scaleX" || prop === "scaleY" ? 1 : 0;
+        const keyframes: Keyframe[] =
+          autoKeyframeRef.current && time > 0.02 && time < 0.98
+            ? [
+                { t: 0, v: base },
+                { t: time, v: val },
+                { t: 1, v: base },
+              ]
+            : [
+                { t: 0, v: val },
+                { t: 1, v: val },
+              ];
         const newTrack: Track = {
           target: targetId,
           property: prop,
-          keyframes: [
-            { t: 0, v: val },
-            { t: 1, v: val },
-          ],
+          keyframes,
         };
         return [...prev, newTrack];
       }
 
       const tr = prev[trackIndex]!;
+      // Pose mode: the dragged value is the element's static pose, so
+      // every keyframe takes it. Animate mode keeps the old behaviour:
+      // update the keyframe at the playhead, or add one there.
+      if (!autoKeyframeRef.current) {
+        return prev.map((track, i) =>
+          i === trackIndex
+            ? { ...track, keyframes: track.keyframes.map((k) => ({ ...k, v: val })) }
+            : track,
+        );
+      }
       const kfIndex = tr.keyframes.findIndex((k) => Math.abs(k.t - time) < 0.02);
       let nextKfs: Keyframe[];
       if (kfIndex !== -1) {
@@ -7174,15 +7723,20 @@ function StudioWorkspace({
       const ctm = svg.getScreenCTM();
       const user = ctm ? pt.matrixTransform(ctm.inverse()) : null;
       if (!user) return;
-      const point = { x: user.x, y: user.y };
+      const point = { x: snapValue(user.x), y: snapValue(user.y) };
       const points = penPointsRef.current;
-      // Clicking near the first point closes the path.
+      // Clicking near the first point closes the path. The old threshold
+      // compared a user-unit distance to a screen-pixel width (width/40),
+      // so on a 200-wide artboard at 3x zoom it closed from ~45 screen
+      // px away — easy to close by accident. Now it is 12 screen px:
+      // ctm.a is screen px per user unit, so 12 / ctm.a is that distance
+      // in user units.
       const first = points[0];
+      const closeThreshold = 12 / (ctm?.a || zoom || 1);
       if (
         first &&
         points.length >= 3 &&
-        Math.hypot(first.x - point.x, first.y - point.y) <
-          Math.max(4, (svg.getBoundingClientRect().width / 40))
+        Math.hypot(first.x - point.x, first.y - point.y) < closeThreshold
       ) {
         finishPen(true);
         return;
@@ -7507,10 +8061,7 @@ function StudioWorkspace({
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      const zoomFactor = -e.deltaY * 0.003;
-      setZoom((z) =>
-        Math.min(4, Math.max(0.2, Math.round((z + zoomFactor) * 100) / 100)),
-      );
+      zoomAt(zoom * Math.exp(-e.deltaY * 0.002), e.clientX, e.clientY);
       return;
     }
     if (effectiveTool === "hand" || e.shiftKey) {
@@ -7521,12 +8072,9 @@ function StudioWorkspace({
       }));
       return;
     }
-    // Plain wheel scrolls to zoom in/out.
+    // Plain wheel scrolls to zoom in/out, anchored at the cursor.
     e.preventDefault();
-    const zoomFactor = -e.deltaY * 0.0015;
-    setZoom((z) =>
-      Math.min(4, Math.max(0.2, Math.round((z + zoomFactor) * 100) / 100)),
-    );
+    zoomAt(zoom * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
   };
 
   const selected =
@@ -7584,9 +8132,46 @@ function StudioWorkspace({
         flipCanvasSelection("y");
         return;
       }
+      if (e.code === "KeyC" && (e.metaKey || e.ctrlKey) && selection) {
+        e.preventDefault();
+        copyKeyframe();
+        return;
+      }
+      if (e.code === "KeyV" && (e.metaKey || e.ctrlKey) && !e.shiftKey && copiedKeyframeRef.current) {
+        // preventDefault also stops the browser paste event, so the canvas
+        // SVG/image paste path does not fire on top of the keyframe paste.
+        e.preventDefault();
+        pasteKeyframe();
+        return;
+      }
+      if (e.code === "BracketLeft" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        stepKeyframe(-1);
+        return;
+      }
+      if (e.code === "BracketRight" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        stepKeyframe(1);
+        return;
+      }
       if (e.code === "KeyF" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         centreCanvasSelection();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.code === "Equal") {
+        e.preventDefault();
+        setZoom((z) => Math.min(MAX_ZOOM, Math.round(z * 1.25 * 100) / 100));
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.code === "Minus") {
+        e.preventDefault();
+        setZoom((z) => Math.max(MIN_ZOOM, Math.round((z / 1.25) * 100) / 100));
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.code === "Digit0") {
+        e.preventDefault();
+        fitView();
         return;
       }
       if (e.code === "Quote" && (e.metaKey || e.ctrlKey)) {
@@ -7680,7 +8265,7 @@ function StudioWorkspace({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [selection, loop, playing, undo, redo, groupCanvasSelection, ungroupCanvasSelection, flipCanvasSelection, centreCanvasSelection]);
+  }, [selection, loop, playing, undo, redo, groupCanvasSelection, ungroupCanvasSelection, flipCanvasSelection, centreCanvasSelection, fitView]);
 
   const handleExport = (format: ExportFormat, options?: ExportRenderOptions) => {
     const result = runExport(
@@ -7700,7 +8285,7 @@ function StudioWorkspace({
 
   // Custom cursor styles - only for precision tools
   const toolCursorStyle = effectiveTool === "pen" 
-    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M15 2 L18 5 L8 15 L5 15 L5 12 Z M13 4 L16 7' fill='%23fff' stroke='%232391FF' stroke-width='1.5' stroke-linejoin='round'/%3E%3Ccircle cx='5.5' cy='14.5' r='1' fill='%232391FF'/%3E%3C/svg%3E") 2 18, crosshair`
+    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M15 2 L18 5 L8 15 L5 15 L5 12 Z M13 4 L16 7' fill='%23fff' stroke='%232391FF' stroke-width='1.5' stroke-linejoin='round'/%3E%3Ccircle cx='5.5' cy='14.5' r='1' fill='%232391FF'/%3E%3C/svg%3E") 5 15, crosshair`
     : effectiveTool === "node"
     ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='9' fill='none' stroke='%23ffffff' stroke-width='3' opacity='0.9'/%3E%3Ccircle cx='14' cy='14' r='9' fill='none' stroke='%232391FF' stroke-width='1.5'/%3E%3Cline x1='14' y1='1' x2='14' y2='7' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='14' y1='21' x2='14' y2='27' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='1' y1='14' x2='7' y2='14' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='21' y1='14' x2='27' y2='14' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='14' cy='14' r='2.5' fill='%232391FF' stroke='%23ffffff' stroke-width='1'/%3E%3C/svg%3E") 14 14, crosshair`
     : effectiveTool === "hand"
@@ -7712,113 +8297,86 @@ function StudioWorkspace({
       <StudioTopBar
         center={
           <div className="flex h-8 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setTool("transform")}
-              className={`relative group grid size-8 place-items-center transition-colors ${
-                effectiveTool === "transform"
-                  ? "text-[#2391FF]"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-              aria-label="Select, Move & Resize tool"
-              aria-pressed={effectiveTool === "transform"}
-            >
-              {/* No fill: filling an outline icon turns it into a solid blob. */}
-              <MousePointer2 className="size-5" strokeWidth={2.5} />
-              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Select</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTool("node")}
-              className={`relative group grid size-8 place-items-center rounded-md transition-colors ${
-                effectiveTool === "node"
-                  ? "bg-[#2391FF]/10 text-[#2391FF]"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              }`}
-              aria-label="Node tool"
-              aria-pressed={effectiveTool === "node"}
-            >
-              {/* No fill: Anchor is a stroke icon, filling it turned it into a solid blob. */}
-              <Anchor className="size-5" strokeWidth={2.5} />
-              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Node</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTool("hand")}
-              className={`relative group grid size-8 place-items-center transition-colors ${
-                effectiveTool === "hand"
-                  ? "text-[#2391FF]"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-              aria-label="Hand / Pan tool"
-              aria-pressed={effectiveTool === "hand"}
-            >
-              <Hand className="size-5" strokeWidth={2.5} />
-              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Hand</span>
-            </button>
-
-            <span aria-hidden="true" className="mx-2 h-5 w-px bg-border" />
-
-            {/* Add shape dropdown */}
+            {/* Tools, collapsed to one button + menu: the old Select / Node /
+                Hand buttons (plus the separate Pen toggle further along)
+                were four header slots for one choice. The button shows the
+                active tool; the menu holds the rest. Keyboard shortcuts
+                (V / N / H / P) still switch directly, unchanged. */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
-                  aria-label="Add shape"
-                  disabled={!onAddElement}
+                  className="relative group flex size-8 items-center justify-center gap-0.5 rounded-md text-[#2391FF] transition-colors hover:bg-accent"
+                  aria-label="Tools"
                 >
-                  <IconTriangleSquareCircle className="size-5" strokeWidth={2.25} />
-                  <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Add shape</span>
+                  {tool === "transform" ? (
+                    <MousePointer2 className="size-5" strokeWidth={2.5} />
+                  ) : tool === "node" ? (
+                    <Anchor className="size-5" strokeWidth={2.5} />
+                  ) : tool === "hand" ? (
+                    <Hand className="size-5" strokeWidth={2.5} />
+                  ) : (
+                    <PenTool className="size-5" strokeWidth={2.5} />
+                  )}
+                  <IconChevronDown className="size-3 text-muted-foreground" />
+                  <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Tools</span>
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
                 <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Add Shape
+                  Tools
                 </div>
-                <DropdownMenuItem onClick={() => onAddElement?.("rect")}>
-                  <IconSquareFilled className="mr-2 size-4 text-emerald-500" />
-                  <span>Rectangle</span>
+                <DropdownMenuItem onClick={() => setTool("transform")}>
+                  <MousePointer2 className="mr-2 size-4" />
+                  <span>Select, Move &amp; Resize</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">V</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("roundRect")}>
-                  <IconRectangleFilled className="mr-2 size-4 text-emerald-500" />
-                  <span>Rounded rectangle</span>
+                <DropdownMenuItem onClick={() => setTool("node")}>
+                  <Anchor className="mr-2 size-4" />
+                  <span>Node</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">N</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("circle")}>
-                  <IconCircleFilled className="mr-2 size-4 text-violet-500" />
-                  <span>Circle</span>
+                <DropdownMenuItem onClick={() => setTool("hand")}>
+                  <Hand className="mr-2 size-4" />
+                  <span>Hand / Pan</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">H</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("ellipse")}>
-                  <IconOvalFilled className="mr-2 size-4 text-violet-500" />
-                  <span>Ellipse</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("triangle")}>
-                  <IconTriangleFilled className="mr-2 size-4 text-amber-500" />
-                  <span>Triangle</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("star")}>
-                  <IconStarFilled className="mr-2 size-4 text-yellow-500" />
-                  <span>Star</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("line")}>
-                  <IconLine className="mr-2 size-4 text-indigo-500" />
-                  <span>Line</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("text")}>
-                  <IconLetterT className="mr-2 size-4 text-rose-500" />
-                  <span>Text</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAddElement?.("g")}>
-                  <IconFolderFilled className="mr-2 size-4 text-amber-500" />
-                  <span>New group</span>
-                </DropdownMenuItem>
-                <div className="my-1 h-px bg-border" />
                 <DropdownMenuItem onClick={() => setTool("pen")}>
-                  <IconPencilFilled className="mr-2 size-4 text-primary" />
-                  <span>Draw with pen</span>
+                  <PenTool className="mr-2 size-4" />
+                  <span>Pen</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">P</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Auto-keyframe toggle: ON = canvas drag/resize writes the
+                track at the playhead (timed move); OFF = Pose, drag/resize
+                moves the static pose. aria-pressed so the state is visible
+                to assistive tech, not just by colour. */}
+            <button
+              type="button"
+              aria-pressed={autoKeyframe}
+              aria-label={autoKeyframe ? "Auto-keyframe on: canvas drags create keyframes at the playhead" : "Auto-keyframe off: canvas drags move the static pose"}
+              title={autoKeyframe ? "Auto-keyframe on — drags create keyframes at the playhead" : "Pose mode — drags move the static pose, no timed move"}
+              onClick={() => setAutoKeyframe((v) => !v)}
+              className={`flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors ${autoKeyframe ? "bg-[#2391FF]/10 text-[#2391FF]" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <IconDiamondFilled className="size-3.5" />
+              {autoKeyframe ? "Auto-keyframe" : "Pose"}
+            </button>
+
+            <span aria-hidden="true" className="mx-2 h-5 w-px bg-border" />
+
+            {/* Asset library popup: wider card, search on top, grouped
+                built-in assets below, plus the user's own My Assets. This
+                replaces the old narrow w-48 Add shape dropdown; Text,
+                New group and Draw with pen live in the popup footer. */}
+            <AssetLibraryPopover
+              onAddAsset={(asset) => onAddAsset?.(asset)}
+              onAddText={() => onAddElement?.("text")}
+              onAddGroup={() => onAddElement?.("g")}
+              onDrawPen={() => setTool("pen")}
+            />
 
             {/* Align tools dropdown */}
             <DropdownMenu>
@@ -7936,21 +8494,7 @@ function StudioWorkspace({
               </DropdownMenu>
             ) : null}
 
-            {/* Pen tool toggle */}
-            <button
-              type="button"
-              onClick={() => setTool(tool === "pen" ? "transform" : "pen")}
-              className={`relative group grid size-8 place-items-center transition-colors ${
-                effectiveTool === "pen"
-                  ? "text-[#2391FF]"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-              aria-label="Pen tool"
-              aria-pressed={effectiveTool === "pen"}
-            >
-              <PenTool className="size-5" strokeWidth={2.5} />
-              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Pen</span>
-            </button>
+            {/* Pen lives in the Tools menu above now, not as a second button. */}
 
             {/* Aspect Ratio Controls */}
             <AspectRatioControl animation={animation} onSave={onSave} />
@@ -7983,39 +8527,50 @@ function StudioWorkspace({
 
             <span aria-hidden="true" className="mx-2 h-5 w-px bg-border" />
 
-            {/* Zoom Controls */}
+            {/* Zoom Controls: multiplicative steps (Shift = fine step),
+                so a click feels the same at 0.1x and at 32x, plus a
+                live percentage readout — click it to reset the view. */}
             <button
               type="button"
-              onClick={() =>
+              onClick={(e) =>
                 setZoom((z) =>
-                  Math.max(0.2, Math.round((z - 0.25) * 100) / 100),
+                  Math.max(MIN_ZOOM, Math.round((z / (e.shiftKey ? 1.1 : 1.25)) * 100) / 100),
                 )
               }
               className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
-              aria-label="Zoom out"
+              aria-label="Zoom out, Shift for a fine step"
             >
               <IconZoomOut className="size-5" strokeWidth={2.5} />
               <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Zoom out</span>
             </button>
             <button
               type="button"
-              onClick={() =>
+              onClick={(e) =>
                 setZoom((z) =>
-                  Math.min(4, Math.round((z + 0.25) * 100) / 100),
+                  Math.min(MAX_ZOOM, Math.round((z * (e.shiftKey ? 1.1 : 1.25)) * 100) / 100),
                 )
               }
               className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
-              aria-label="Zoom in"
+              aria-label="Zoom in, Shift for a fine step"
             >
               <IconZoomIn className="size-5" strokeWidth={2.5} />
               <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Zoom in</span>
             </button>
             <button
               type="button"
-              onClick={() => {
-                setZoom(1);
-                setPan({ x: 0, y: 0 });
-              }}
+              onClick={fitView}
+              className="relative group grid h-6 min-w-10 shrink-0 place-items-center rounded-[5px] px-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={`Zoom ${Math.round(zoom * 100)} percent, click to reset view`}
+            >
+              {Math.round(zoom * 100)}%
+              <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 font-sans text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Reset view</span>
+            </button>
+            <button
+              type="button"
+              // Reset means back to the fitted view, not zoom 1 — zoom 1
+              // is exactly the zoomed-out view opening a canvas used to
+              // show, so resetting to it would undo the fit.
+              onClick={fitView}
               className="relative group grid size-6 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground"
               aria-label="Reset zoom and center view"
             >
@@ -8026,8 +8581,31 @@ function StudioWorkspace({
         }
         right={
           <>
-            <Button size="sm" variant="outline" className="h-8 text-[12px]" onClick={animateAlongPath} title="Select an element, then Shift-click a path">Motion path</Button>
-            <Button size="sm" variant="outline" className="h-8 text-[12px]" onClick={() => void staggerCanvasSelection()} title="Stagger the selected elements' animations">Stagger</Button>
+            {/* Motion path + Stagger, collapsed to one menu: they were two
+                text buttons eating right-header width for two occasional
+                actions. Export stays a standalone primary button. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline" className="h-8 gap-1 text-[12px]" title="Animate along a path, or stagger the selection">
+                  Animate
+                  <IconChevronDown className="size-3.5 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem onClick={animateAlongPath}>
+                  <span className="flex flex-col">
+                    <span>Motion path</span>
+                    <span className="text-[11px] text-muted-foreground">Select an element, then Shift-click a path</span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void staggerCanvasSelection()}>
+                  <span className="flex flex-col">
+                    <span>Stagger</span>
+                    <span className="text-[11px] text-muted-foreground">Shift the selected elements&apos; keyframes apart</span>
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               size="sm"
               className="h-8 gap-1.5 text-[12px] bg-[#2391FF] text-white hover:bg-[#1f7fe0]"
@@ -8114,11 +8692,10 @@ function StudioWorkspace({
               className="relative [&>svg]:block [&>svg]:h-auto [&>svg]:w-auto"
               dangerouslySetInnerHTML={{ 
                 __html: (() => {
-                  // Clean the SVG
-                  let cleanSvg = animation.svg
-                    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-                    .replace(/<script[^>]*>/gi, '')
-                    .replace(/<\/script>/gi, '');
+                  // One shared sanitiser (lib/sanitize.ts) for stage and
+                  // exports — the old script-only regex left on* handlers,
+                  // javascript: hrefs and foreignObject in place.
+                  let cleanSvg = sanitizeSvg(animation.svg ?? "");
                   
                   // Fix zero or missing width/height
                   if (!cleanSvg.match(/\swidth\s*=\s*["'][^"'0][^"']*["']/)) {
@@ -8191,38 +8768,71 @@ function StudioWorkspace({
                     : "0 0 200 200";
                 })()}
               >
+                {/* Faint fill preview once a shape can close, so you see
+                    the filled shape before you commit it — not just a line. */}
+                {penPoints.length >= 3 ? (
+                  <path
+                    d={penPathD(penPoints, true)}
+                    fill="#2391FF"
+                    fill-opacity="0.07"
+                    stroke="none"
+                    className="pointer-events-none"
+                  />
+                ) : null}
                 {penPoints.length > 0 ? (
                   <path
                     d={penPathD(penPoints, false)}
                     fill="none"
                     stroke="#2391FF"
-                    stroke-width="3"
+                    // 1 unit, in artwork units — not screen-constant like
+                    // the handle dots. So it stays thin, and it still gets
+                    // thinner on screen when you zoom out and thicker
+                    // when you zoom in, exactly like the finished path.
+                    stroke-width="1"
                     stroke-linecap="round"
                     stroke-linejoin="round"
-                    opacity="0.85"
+                    opacity="0.9"
                   />
                 ) : null}
                 {penPoints.flatMap((p, i) => {
                   const els: React.ReactNode[] = [];
                   if (p.outX !== undefined && p.outY !== undefined) {
-                    els.push(<line key={`o${i}`} x1={p.x} y1={p.y} x2={p.outX} y2={p.outY} stroke="#2391FF" stroke-width="1" opacity="0.7" />);
-                    els.push(<rect key={`od${i}`} x={p.outX - 3} y={p.outY - 3} width="6" height="6" transform={`rotate(45 ${p.outX} ${p.outY})`} fill="#2391FF" stroke="#ffffff" stroke-width="1" />);
+                    els.push(<line key={`o${i}`} x1={p.x} y1={p.y} x2={p.outX} y2={p.outY} stroke="#2391FF" stroke-width={nodeU} vector-effect="non-scaling-stroke" opacity="0.8" />);
+                    els.push(<rect key={`od${i}`} x={p.outX - 3 * nodeU} y={p.outY - 3 * nodeU} width={6 * nodeU} height={6 * nodeU} transform={`rotate(45 ${p.outX} ${p.outY})`} fill="#2391FF" stroke="#ffffff" stroke-width={nodeU} vector-effect="non-scaling-stroke" />);
                   }
                   if (p.inX !== undefined && p.inY !== undefined) {
-                    els.push(<line key={`i${i}`} x1={p.x} y1={p.y} x2={p.inX} y2={p.inY} stroke="#2391FF" stroke-width="1" opacity="0.7" />);
-                    els.push(<rect key={`id${i}`} x={p.inX - 3} y={p.inY - 3} width="6" height="6" transform={`rotate(45 ${p.inX} ${p.inY})`} fill="#2391FF" stroke="#ffffff" stroke-width="1" />);
+                    els.push(<line key={`i${i}`} x1={p.x} y1={p.y} x2={p.inX} y2={p.inY} stroke="#2391FF" stroke-width={nodeU} vector-effect="non-scaling-stroke" opacity="0.8" />);
+                    els.push(<rect key={`id${i}`} x={p.inX - 3 * nodeU} y={p.inY - 3 * nodeU} width={6 * nodeU} height={6 * nodeU} transform={`rotate(45 ${p.inX} ${p.inY})`} fill="#2391FF" stroke="#ffffff" stroke-width={nodeU} vector-effect="non-scaling-stroke" />);
                   }
                   return els;
                 })}
+                {/* Dashed ring around the first point once closing is
+                    possible — the close target was previously just a
+                    slightly bigger dot, easy to miss. */}
+                {penPoints.length >= 3 && penPoints[0] ? (
+                  <circle
+                    cx={penPoints[0]!.x}
+                    cy={penPoints[0]!.y}
+                    r={7 * nodeU}
+                    fill="none"
+                    stroke="#2391FF"
+                    stroke-width={nodeU}
+                    stroke-dasharray={`${2 * nodeU} ${2 * nodeU}`}
+                    vector-effect="non-scaling-stroke"
+                    opacity="0.7"
+                    className="pointer-events-none"
+                  />
+                ) : null}
                 {penPoints.map((p, i) => (
                   <circle
                     key={i}
                     cx={p.x}
                     cy={p.y}
-                    r={i === 0 ? 5 : 3}
-                    fill={i === 0 ? "#2391FF" : "#ffffff"}
+                    r={i === 0 || i === penPoints.length - 1 ? 3.5 * nodeU : 3 * nodeU}
+                    fill={i === 0 || i === penPoints.length - 1 ? "#2391FF" : "#ffffff"}
                     stroke="#2391FF"
-                    stroke-width="2"
+                    stroke-width={nodeU}
+                    vector-effect="non-scaling-stroke"
                   />
                 ))}
                 {penHover && penPoints.length > 0 ? (
@@ -8232,26 +8842,22 @@ function StudioWorkspace({
                     x2={penHover.x}
                     y2={penHover.y}
                     stroke="#2391FF"
-                    stroke-width="2"
-                    stroke-dasharray="4 3"
-                    opacity="0.6"
+                    stroke-width={nodeU}
+                    stroke-dasharray={`${3 * nodeU} ${2 * nodeU}`}
+                    vector-effect="non-scaling-stroke"
+                    opacity="0.7"
                   />
                 ) : null}
                 {penHover && penPoints.length === 0 ? (
                   <circle
                     cx={penHover.x}
                     cy={penHover.y}
-                    r="3"
+                    r={2.5 * nodeU}
                     fill="#2391FF"
                     opacity="0.7"
                   />
                 ) : null}
               </svg>
-            ) : null}
-            {penPoints.length > 0 ? (
-              <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 rounded-md bg-foreground/85 px-2 py-1 text-[11px] text-background shadow">
-                {penPoints.length} point{penPoints.length === 1 ? "" : "s"} · click to add, drag for a curve · click first dot to close · Enter to finish · Esc to cancel
-              </div>
             ) : null}
             {tool === "node" && nodePoints.length > 0 ? (
               <svg
@@ -8276,8 +8882,9 @@ function StudioWorkspace({
                       x2={l.x2}
                       y2={l.y2}
                       stroke="#2391FF"
-                      stroke-width="1"
-                      opacity="0.7"
+                      stroke-width={nodeU}
+                      vector-effect="non-scaling-stroke"
+                      opacity="0.8"
                     />
                   ))
                 ) : (
@@ -8285,9 +8892,10 @@ function StudioWorkspace({
                     points={nodePoints.map((p) => `${p.x},${p.y}`).join(" ")}
                     fill="none"
                     stroke="#2391FF"
-                    stroke-width="1.5"
-                    stroke-dasharray="4 3"
-                    opacity="0.6"
+                    stroke-width={nodeU}
+                    stroke-dasharray={`${4 * nodeU} ${3 * nodeU}`}
+                    vector-effect="non-scaling-stroke"
+                    opacity="0.7"
                   />
                 )}
                 {nodePoints.map((p, i) => (
@@ -8296,7 +8904,7 @@ function StudioWorkspace({
                     <circle
                       cx={p.x}
                       cy={p.y}
-                      r="10"
+                      r={9 * nodeU}
                       fill="transparent"
                       className="pointer-events-auto cursor-grab"
                       onPointerDown={(e) => {
@@ -8359,26 +8967,73 @@ function StudioWorkspace({
                     />
                     {nodeBezier?.controlIndices.has(i) ? (
                       <rect
-                        x={p.x - 3.5}
-                        y={p.y - 3.5}
-                        width="7"
-                        height="7"
+                        x={p.x - 2.5 * nodeU}
+                        y={p.y - 2.5 * nodeU}
+                        width={5 * nodeU}
+                        height={5 * nodeU}
                         transform={`rotate(45 ${p.x} ${p.y})`}
-                        fill="#2391FF"
-                        stroke="#ffffff"
-                        stroke-width="1"
+                        fill="#ffffff"
+                        stroke="#2391FF"
+                        stroke-width={nodeU}
+                        vector-effect="non-scaling-stroke"
                         className="pointer-events-none"
                       />
                     ) : (
-                      <circle
-                        cx={p.x}
-                        cy={p.y}
-                        r="3"
-                        fill={i === 0 || nodeSmooth.has(i) ? "#2391FF" : "#ffffff"}
-                        stroke="#2391FF"
-                        stroke-width="1.5"
-                        className="pointer-events-none"
-                      />
+                      <g className="pointer-events-none">
+                        {/* Slim plus for anchors, replacing the filled
+                            circles: a white halo plus underneath so the
+                            1px blue cross stays visible on any artwork,
+                            then the blue cross itself. The invisible 9px
+                            grab circle above still does the dragging, so
+                            a slim symbol stays easy to grab. Smooth and
+                            first anchors get a tiny centre dot, the old
+                            filled-blue distinction, in plus form. */}
+                        <line
+                          x1={p.x - 4 * nodeU}
+                          y1={p.y}
+                          x2={p.x + 4 * nodeU}
+                          y2={p.y}
+                          stroke="#ffffff"
+                          stroke-width={2 * nodeU}
+                          stroke-linecap="round"
+                          vector-effect="non-scaling-stroke"
+                          opacity="0.9"
+                        />
+                        <line
+                          x1={p.x}
+                          y1={p.y - 4 * nodeU}
+                          x2={p.x}
+                          y2={p.y + 4 * nodeU}
+                          stroke="#ffffff"
+                          stroke-width={2 * nodeU}
+                          stroke-linecap="round"
+                          vector-effect="non-scaling-stroke"
+                          opacity="0.9"
+                        />
+                        <line
+                          x1={p.x - 4 * nodeU}
+                          y1={p.y}
+                          x2={p.x + 4 * nodeU}
+                          y2={p.y}
+                          stroke="#2391FF"
+                          stroke-width={nodeU}
+                          stroke-linecap="round"
+                          vector-effect="non-scaling-stroke"
+                        />
+                        <line
+                          x1={p.x}
+                          y1={p.y - 4 * nodeU}
+                          x2={p.x}
+                          y2={p.y + 4 * nodeU}
+                          stroke="#2391FF"
+                          stroke-width={nodeU}
+                          stroke-linecap="round"
+                          vector-effect="non-scaling-stroke"
+                        />
+                        {i === 0 || nodeSmooth.has(i) ? (
+                          <circle cx={p.x} cy={p.y} r={1.2 * nodeU} fill="#2391FF" />
+                        ) : null}
+                      </g>
                     )}
                   </g>
                 ))}
@@ -8462,32 +9117,77 @@ function StudioWorkspace({
           </div>
         ) : null}
 
-        {selected ? (
-          <KeyframeInspector
-            track={selected.track}
-            keyframe={selected.keyframe}
-            time={time}
-            onChange={(patch) =>
-              updateKeyframe(
-                selected.selection.track,
-                selected.selection.keyframe,
-                patch,
-              )
-            }
-            onTrackKeyframeChange={(kfIndex, patch) =>
-              updateKeyframe(selected.selection.track, kfIndex, patch)
-            }
-            onDelete={() => {
-              removeKeyframe(
-                selected.selection.track,
-                selected.selection.keyframe,
-              );
-              setSelection(null);
-            }}
-            onClose={() => setSelection(null)}
-          />
-        ) : null}
+        {selected && keyframeSlot
+          ? createPortal(
+              <KeyframeInspector
+                docked
+                track={selected.track}
+                keyframe={selected.keyframe}
+                time={time}
+                onChange={(patch) =>
+                  updateKeyframe(
+                    selected.selection.track,
+                    selected.selection.keyframe,
+                    patch,
+                  )
+                }
+                onTrackKeyframeChange={(kfIndex, patch) =>
+                  updateKeyframe(selected.selection.track, kfIndex, patch)
+                }
+                onTrackKeyframeAdd={(t, v) =>
+                  addKeyframe(selected.selection.track, t, v)
+                }
+                onPrev={() => stepKeyframe(-1)}
+                onNext={() => stepKeyframe(1)}
+                onCopy={copyKeyframe}
+                onPaste={pasteKeyframe}
+                canPaste={hasCopiedKeyframe}
+                onDelete={() => {
+                  removeKeyframe(
+                    selected.selection.track,
+                    selected.selection.keyframe,
+                  );
+                  setSelection(null);
+                }}
+                onClose={() => setSelection(null)}
+              />,
+              keyframeSlot,
+            )
+          : null}
       </div>
+
+      {/* Pen hint, after the canvas ends: not overlaid on the canvas at
+          all, no background, no pill, no shadow — just small muted text
+          with two small text buttons. It sits in normal flow between
+          the canvas and the timeline, so it never covers art. */}
+      {tool === "pen" ? (
+        <div className="flex shrink-0 items-center justify-center gap-3 px-2 py-1 text-[11px] text-muted-foreground">
+          {penPoints.length === 0 ? (
+            <span>Click to place a point · drag for a curve</span>
+          ) : (
+            <>
+              <span>
+                {penPoints.length} point{penPoints.length === 1 ? "" : "s"} · click to add · drag for a curve
+                {penPoints.length >= 3 ? " · click the ring to close" : ""}
+              </span>
+              <button
+                type="button"
+                onClick={() => finishPen(false)}
+                className="font-medium text-[#2391FF] hover:underline"
+              >
+                Finish (Enter)
+              </button>
+              <button
+                type="button"
+                onClick={() => cancelPen()}
+                className="hover:underline"
+              >
+                Cancel (Esc)
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
 
       <Timeline
         tracks={tracks}
@@ -8498,6 +9198,7 @@ function StudioWorkspace({
         playing={playing}
         loop={loop}
         height={timelineHeight}
+        sidebarWidth={sidebarWidth}
         onHeightChange={onTimelineHeightChange}
         onTogglePlay={togglePlay}
         onToggleLoop={() => setLoop((v) => !v)}
@@ -8529,17 +9230,34 @@ function GraphEditor({
   track,
   time,
   onKeyframeChange,
+  onKeyframeAdd,
 }: {
   track: Track;
-  time?: number;
-  onKeyframeChange: (kfIndex: number, patch: { t?: number; v?: number }) => void;
+  time?: number | undefined;
+  onKeyframeChange: (kfIndex: number, patch: { t?: number; v?: number; ease?: string }) => void;
+  onKeyframeAdd?: ((t: number, v: number) => void) | undefined;
 }) {
   const W = 240;
   const H = 120;
   const PAD = 12;
-  const numeric = track.keyframes.filter((k) => typeof k.v === "number") as Array<{ t: number; v: number; ease?: string }>;
+  // Numeric keyframes with their original track indices, so handle and point
+  // drags update the right keyframe even if a track mixes value types.
+  const numeric = track.keyframes
+    .map((k, index) => ({ ...k, index }))
+    .filter((k) => typeof k.v === "number") as Array<{ t: number; v: number; ease?: string; index: number }>;
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ index: number; min: number; max: number } | null>(null);
+  const handleDragRef = useRef<{
+    leftIndex: number;
+    handle: 0 | 1;
+    cubic: [number, number, number, number];
+    aT: number;
+    aV: number;
+    bT: number;
+    bV: number;
+    min: number;
+    max: number;
+  } | null>(null);
   if (numeric.length < 2) {
     return <p className="text-[11px] text-muted-foreground">Add at least two numeric keyframes to see the curve.</p>;
   }
@@ -8584,13 +9302,147 @@ function GraphEditor({
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
   };
+  // Convert a pointer position in the graph to (time, value), inverting the
+  // x/y mappings above (including the PAD, which point-drag ignores).
+  const pointToTimeValue = (clientX: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    const vx = ((clientX - rect.left) / rect.width) * W;
+    const vy = ((clientY - rect.top) / rect.height) * H;
+    const t = Math.max(0, Math.min(1, (vx - PAD) / (W - PAD * 2)));
+    const v = min + (1 - (vy - PAD) / (H - PAD * 2)) * (max - min);
+    return { t, v: Math.round(v * 100) / 100 };
+  };
+  const startHandleDrag = (
+    e: React.PointerEvent,
+    leftIndex: number,
+    handle: 0 | 1,
+    cubic: [number, number, number, number],
+    aT: number,
+    aV: number,
+    bT: number,
+    bV: number,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    handleDragRef.current = { leftIndex, handle, cubic, aT, aV, bT, bV, min, max };
+    const move = (ev: PointerEvent) => {
+      const drag = handleDragRef.current;
+      if (!drag) return;
+      const pt = pointToTimeValue(ev.clientX, ev.clientY);
+      if (!pt) return;
+      const spanT = drag.bT - drag.aT;
+      const spanV = drag.bV - drag.aV;
+      if (spanT === 0) return;
+      const next = [...drag.cubic] as [number, number, number, number];
+      if (drag.handle === 0) {
+        next[0] = Math.round(Math.max(0, Math.min(1, (pt.t - drag.aT) / spanT)) * 100) / 100;
+        // With equal values the easing shape is invisible, so only time moves.
+        if (spanV !== 0) next[1] = Math.round(Math.max(-2, Math.min(2, (pt.v - drag.aV) / spanV)) * 100) / 100;
+      } else {
+        next[2] = Math.round(Math.max(0, Math.min(1, (pt.t - drag.aT) / spanT)) * 100) / 100;
+        if (spanV !== 0) next[3] = Math.round(Math.max(-2, Math.min(2, (pt.v - drag.aV) / spanV)) * 100) / 100;
+      }
+      handleDragRef.current = { ...drag, cubic: next };
+      onKeyframeChange(drag.leftIndex, { ease: formatCubicBezier(next) });
+    };
+    const up = () => {
+      handleDragRef.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+  // Bezier handles, one segment at a time. A segment's easing is stored on
+  // its left keyframe, so both handles of a segment edit that keyframe's
+  // cubic-bezier: handle 0 is (x1,y1), handle 1 is (x2,y2). Hold segments
+  // have no curve to shape and get no handles. Handles are drawn before
+  // the keyframe points, so a handle sitting exactly on a keyframe (the
+  // linear case) does not steal the keyframe's own drag.
+  const handles: Array<{
+    key: string;
+    leftIndex: number;
+    handle: 0 | 1;
+    cubic: [number, number, number, number];
+    aT: number;
+    aV: number;
+    bT: number;
+    bV: number;
+    cx: number;
+    cy: number;
+  }> = [];
+  for (let i = 0; i < numeric.length - 1; i++) {
+    const a = numeric[i]!;
+    const b = numeric[i + 1]!;
+    if (a.ease === "hold") continue;
+    const cubic = cubicBezierForEase(a.ease);
+    handles.push({
+      key: `${a.index}-0`,
+      leftIndex: a.index,
+      handle: 0,
+      cubic,
+      aT: a.t,
+      aV: a.v,
+      bT: b.t,
+      bV: b.v,
+      cx: x(a.t + cubic[0] * (b.t - a.t)),
+      cy: y(a.v + cubic[1] * (b.v - a.v)),
+    });
+    handles.push({
+      key: `${a.index}-1`,
+      leftIndex: a.index,
+      handle: 1,
+      cubic,
+      aT: a.t,
+      aV: a.v,
+      bT: b.t,
+      bV: b.v,
+      cx: x(a.t + cubic[2] * (b.t - a.t)),
+      cy: y(a.v + cubic[3] * (b.v - a.v)),
+    });
+  }
   return (
     <div>
-      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full rounded-md border border-border bg-muted/30">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full rounded-md border border-border bg-muted/30"
+        onDoubleClick={(e) => {
+          if (!onKeyframeAdd) return;
+          const pt = pointToTimeValue(e.clientX, e.clientY);
+          if (pt) onKeyframeAdd(pt.t, pt.v);
+        }}
+      >
         <path d={curve.join(" ")} fill="none" stroke="#2391FF" strokeWidth="2" />
         {time !== undefined ? (
           <line x1={x(time)} y1={0} x2={x(time)} y2={H} stroke="#2391FF" strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
         ) : null}
+        {handles.map((h) => (
+          <g key={h.key}>
+            <line
+              x1={h.handle === 0 ? x(h.aT) : x(h.bT)}
+              y1={h.handle === 0 ? y(h.aV) : y(h.bV)}
+              x2={h.cx}
+              y2={h.cy}
+              stroke="#2391FF"
+              strokeWidth="1"
+              opacity="0.5"
+            />
+            <circle
+              cx={h.cx}
+              cy={h.cy}
+              r="7"
+              fill="transparent"
+              className="cursor-grab"
+              onPointerDown={(e) => startHandleDrag(e, h.leftIndex, h.handle, h.cubic, h.aT, h.aV, h.bT, h.bV)}
+            />
+            <rect x={h.cx - 3.5} y={h.cy - 3.5} width="7" height="7" fill="#ffffff" stroke="#2391FF" strokeWidth="1.5" className="pointer-events-none" />
+          </g>
+        ))}
         {track.keyframes.map((k, i) => {
           if (typeof k.v !== "number") return null;
           return (
@@ -8601,7 +9453,7 @@ function GraphEditor({
           );
         })}
       </svg>
-      <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Drag a diamond to change its time (horizontal) and value (vertical). The curve shows the easing between keyframes.</p>
+      <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">Drag a point to change its time (horizontal) and value (vertical). Drag a square handle to reshape that segment's easing curve. Double-click the graph to add a keyframe there.</p>
     </div>
   );
 }
@@ -8612,16 +9464,32 @@ function KeyframeInspector({
   time,
   onChange,
   onTrackKeyframeChange,
+  onTrackKeyframeAdd,
+  onPrev,
+  onNext,
+  onCopy,
+  onPaste,
+  canPaste = false,
   onDelete,
   onClose,
+  docked = false,
 }: {
   track: Track;
   keyframe: { t: number; v: number | string; ease?: string };
   time?: number;
   onChange: (patch: { t?: number; v?: number | string; ease?: string }) => void;
-  onTrackKeyframeChange?: (kfIndex: number, patch: { t?: number; v?: number }) => void;
+  onTrackKeyframeChange?: (kfIndex: number, patch: { t?: number; v?: number; ease?: string }) => void;
+  onTrackKeyframeAdd?: (t: number, v: number) => void;
+  onPrev?: () => void;
+  onNext?: () => void;
+  onCopy?: () => void;
+  onPaste?: () => void;
+  canPaste?: boolean;
   onDelete: () => void;
   onClose: () => void;
+  /** Docked in the left sidebar (via the portal slot) instead of floating
+      over the canvas: full width, in-flow, no absolute positioning. */
+  docked?: boolean;
 }) {
   const meta = PROPERTY_DEFINITIONS[track.property];
   const isColor =
@@ -8631,11 +9499,16 @@ function KeyframeInspector({
   const easingMissing =
     keyframe.ease &&
     !EASING_OPTIONS.some((option) => option.value === keyframe.ease);
+  const cubic = parseCubicBezier(keyframe.ease);
 
   return (
     <div
       data-keep-selection
-      className="absolute right-5 top-5 z-30 w-60 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
+      className={
+        docked
+          ? "w-full overflow-hidden bg-sidebar text-sidebar-foreground"
+          : "absolute right-5 top-5 z-30 w-60 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
+      }
     >
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <div className="flex items-center gap-2">
@@ -8645,13 +9518,31 @@ function KeyframeInspector({
             #{track.target}
           </span>
         </div>
-        <button
-          onClick={onClose}
-          className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-          title="Close"
-        >
-          <IconX className="size-3" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={onPrev}
+            className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            title="Previous keyframe ([)"
+            aria-label="Previous keyframe"
+          >
+            <IconChevronRight className="size-3 rotate-180" />
+          </button>
+          <button
+            onClick={onNext}
+            className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            title="Next keyframe (])"
+            aria-label="Next keyframe"
+          >
+            <IconChevronRight className="size-3" />
+          </button>
+          <button
+            onClick={onClose}
+            className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            title="Close"
+          >
+            <IconX className="size-3" />
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3 p-3">
@@ -8734,15 +9625,73 @@ function KeyframeInspector({
           </Select>
         </label>
 
+        {keyframe.ease === "hold" ? null : cubic ? (
+          <div>
+            <span className="mb-1 block text-[10px] font-medium text-muted-foreground">Custom bezier</span>
+            <div className="grid grid-cols-4 gap-1.5">
+              {["x1", "y1", "x2", "y2"].map((label, i) => (
+                <label key={label} className="block">
+                  <span className="mb-0.5 block text-[10px] text-muted-foreground">{label}</span>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={cubic[i]}
+                    onChange={(e) => {
+                      const parsed = parseFloat(e.target.value);
+                      if (!Number.isFinite(parsed)) return;
+                      const next = [...cubic] as [number, number, number, number];
+                      const isX = i === 0 || i === 2;
+                      const clamped = Math.round(Math.max(isX ? 0 : -2, Math.min(isX ? 1 : 2, parsed)) * 100) / 100;
+                      if (i === 0) next[0] = clamped;
+                      else if (i === 1) next[1] = clamped;
+                      else if (i === 2) next[2] = clamped;
+                      else next[3] = clamped;
+                      onChange({ ease: formatCubicBezier(next) });
+                    }}
+                    className="h-7 px-1.5 text-[11px]"
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onChange({ ease: formatCubicBezier(cubicBezierForEase(keyframe.ease)) })}
+            className="flex w-full items-center justify-center rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            Convert to custom bezier
+          </button>
+        )}
+
         <div>
           <span className="mb-1 block text-[10px] font-medium text-muted-foreground">Graph</span>
           {onTrackKeyframeChange ? (
-            <GraphEditor track={track} time={time} onKeyframeChange={onTrackKeyframeChange} />
+            <GraphEditor track={track} time={time} onKeyframeChange={onTrackKeyframeChange} onKeyframeAdd={onTrackKeyframeAdd} />
           ) : (
             <p className="text-[11px] text-muted-foreground">Graph editing is unavailable for this track.</p>
           )}
         </div>
 
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={onCopy}
+            title="Copy keyframe (Cmd/Ctrl+C)"
+            className="flex items-center justify-center rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            Copy keyframe
+          </button>
+          <button
+            type="button"
+            onClick={onPaste}
+            disabled={!canPaste}
+            title="Paste keyframe at the playhead (Cmd/Ctrl+V)"
+            className="flex items-center justify-center rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-35"
+          >
+            Paste keyframe
+          </button>
+        </div>
         <button
           onClick={onDelete}
           className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
@@ -8764,6 +9713,7 @@ function Timeline({
   playing,
   loop,
   height,
+  sidebarWidth = 256,
   onHeightChange,
   onTogglePlay,
   onToggleLoop,
@@ -8782,6 +9732,10 @@ function Timeline({
   playing: boolean;
   loop: boolean;
   height: number;
+  /** Width of the left sidebar. The timeline stretches left under it by
+      this amount, so it always spans the full window width no matter how
+      wide the user drags the sidebar (200–480px). */
+  sidebarWidth?: number;
   onHeightChange: (height: number) => void;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
@@ -8996,8 +9950,15 @@ function Timeline({
 
   return (
     <div
-      className="-ml-64 flex w-[calc(100%+16rem)] shrink-0 select-none flex-col border-t border-border bg-[#1a1a1a]"
-      style={{ height }}
+      // relative + z-10: the timeline stretches left under the sidebar,
+      // and the sidebar container is position:relative, so without this
+      // its right border painted over the timeline's left strip.
+      className="relative z-10 flex shrink-0 select-none flex-col border-t border-border bg-[#1a1a1a]"
+      style={{
+        height,
+        marginLeft: -sidebarWidth,
+        width: `calc(100% + ${sidebarWidth}px)`,
+      }}
     >
       {/* Drag handle — resize the timeline height */}
       <div
@@ -9053,7 +10014,7 @@ function Timeline({
         </div>
 
         <span className="ml-2 hidden min-w-0 flex-1 truncate text-[10px] text-muted-foreground lg:block">
-          Drag diamonds to retime · Double-click a track to add a keyframe
+          Drag diamonds to retime · Double-click a track to add a keyframe · [ ] step keyframes · Cmd/Ctrl+C/V copy/paste a keyframe
         </span>
 
         <div className="ml-auto flex shrink-0 items-center gap-2">

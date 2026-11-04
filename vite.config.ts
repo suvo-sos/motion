@@ -20,11 +20,19 @@ export default defineConfig({
       // mid-session, drop the HMR socket ('socket hang up'), and force a
       // full reload when the op is first used.
       "polygon-clipping",
+      // Agent sidebar panel deps. The panel (AgentSidebarPanel, lazy) pulls
+      // the whole assistant chat in on first open; with these left to
+      // on-demand transform, that first open stalled on the panel's
+      // Suspense skeleton and never resolved. Pre-bundling the toolkit
+      // and core client packages at server start makes the panel load
+      // from the optimized bundle instead.
+      "@agent-native/toolkit",
+      "@agent-native/core",
     ],
     entries: [
       "app/entry.client.tsx",
       "app/root.tsx",
-      "app/components/layout/{Layout,Sidebar}.tsx",
+      "app/components/layout/{Layout,Sidebar,AgentInspector}.tsx",
       "app/components/chat/ChatRouteContent.tsx",
       "app/routes/{home,motion,chat.$threadId}.tsx",
     ],
