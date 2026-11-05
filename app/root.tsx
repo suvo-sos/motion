@@ -9,7 +9,7 @@ import { useCommandMenuShortcut } from "@agent-native/toolkit/app/shared";
 import { CommandMenu } from "@agent-native/toolkit/app/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Links,
   Meta,
@@ -191,6 +191,21 @@ function isPublicPathname(pathname: string) {
   );
 }
 
+// On public paths AppProviders renders its whole tree during server
+// rendering, and every framework hook in it that touches the router
+// (DbSyncSetup, LayoutShell, RouteTransitionIndicator, the home composer)
+// throws there — the server resolves a second copy of react-router, so
+// its hooks see no Router. Non-public paths never hit this because the
+// framework hides the tree behind ClientOnly during SSR. Do the same here:
+// the app mounts in the browser only, after hydration.
+function ClientOnly({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  return mounted ? <>{children}</> : null;
+}
+
 export default function Root() {
   const [queryClient] = useState(() => createAgentNativeQueryClient());
   // The path, not the visitor, picks the shell, so the SSR shell stays one
@@ -202,15 +217,17 @@ export default function Root() {
   const isPublicPath = isPublicPathname(pathname);
   return (
     <AppToolkitProvider>
-      <AppProviders
-        queryClient={queryClient}
-        isPublicPath={isPublicPath}
-        skeletonLayout={skeletonLayoutForPath(pathname)}
-        i18n={{ catalog: i18nCatalog }}
-      >
-        <DbSyncSetup />
-        <AppContent />
-      </AppProviders>
+      <ClientOnly>
+        <AppProviders
+          queryClient={queryClient}
+          isPublicPath={isPublicPath}
+          skeletonLayout={skeletonLayoutForPath(pathname)}
+          i18n={{ catalog: i18nCatalog }}
+        >
+          <DbSyncSetup />
+          <AppContent />
+        </AppProviders>
+      </ClientOnly>
     </AppToolkitProvider>
   );
 }
