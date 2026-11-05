@@ -192,7 +192,7 @@ export default function HomePage() {
         startFreshStudioChat();
         navigate(`/motion?id=${encodeURIComponent(result.id)}`);
       } else {
-        alert(`Could not create "${template.label}": ${result?.error ?? "unknown error"}`);
+        alert(`Could not create "${template.label}": unknown error`);
       }
     } catch (err) {
       alert(`Could not create "${template.label}": ${(err as Error)?.message ?? err}`);
