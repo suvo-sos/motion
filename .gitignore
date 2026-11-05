@@ -41,6 +41,7 @@ learnings.md
 .vercel/
 .agent-native/
 data/*.lock
+data/pglite/
 .vercel
 .env*.local
 supabase/.temp/
