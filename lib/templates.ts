@@ -66,6 +66,53 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     icon: template.icon as TemplateIconName,
   })),
 
+  {
+    id: "happy-birthday",
+    label: "Happy birthday card",
+    hint: "A popping title, floating balloons and a cake.",
+    icon: "heart",
+    duration: 3000,
+    loop: true,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
+  <rect id="card" x="30" y="40" width="180" height="160" rx="20" fill="#FFF7ED" stroke="#FDBA74" stroke-width="3"/>
+  <text id="hb-text" x="120" y="95" text-anchor="middle" font-size="22" font-weight="700" fill="#EA580C">Happy Birthday</text>
+  <g id="balloon-1"><ellipse cx="70" cy="60" rx="16" ry="20" fill="#F43F5E"/><path d="M70 80 L70 110" stroke="#F43F5E" stroke-width="2"/></g>
+  <g id="balloon-2"><ellipse cx="170" cy="55" rx="16" ry="20" fill="#3B82F6"/><path d="M170 75 L170 110" stroke="#3B82F6" stroke-width="2"/></g>
+  <g id="cake"><rect x="90" y="150" width="60" height="30" rx="6" fill="#FCD34D"/><rect x="100" y="140" width="40" height="12" rx="4" fill="#F87171"/><rect x="118" y="132" width="4" height="10" fill="#FBBF24"/></g>
+</svg>`,
+    tracks: [
+      { target: "hb-text", property: "scale", keyframes: [{ t: 0, v: 0.6, ease: easeBack }, { t: 0.25, v: 1.05, ease: easeOut }, { t: 0.4, v: 1 }, { t: 1, v: 1 }] },
+      { target: "hb-text", property: "opacity", keyframes: [{ t: 0, v: 0, ease: easeOut }, { t: 0.2, v: 1 }, { t: 1, v: 1 }] },
+      { target: "balloon-1", property: "translateY", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.5, v: -10, ease: easeInOut }, { t: 1, v: 0 }] },
+      { target: "balloon-2", property: "translateY", keyframes: [{ t: 0, v: -6, ease: easeInOut }, { t: 0.5, v: 4, ease: easeInOut }, { t: 1, v: -6 }] },
+      { target: "cake", property: "scale", keyframes: [{ t: 0, v: 0.85, ease: easeBack }, { t: 0.3, v: 1.02, ease: easeOut }, { t: 0.5, v: 1 }, { t: 1, v: 1 }] },
+    ],
+  },
+  {
+    id: "sale-starts-nov14",
+    label: "Sale starts Nov 14",
+    hint: "A bold sale badge counting down to launch day.",
+    icon: "bolt",
+    duration: 2600,
+    loop: true,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
+  <circle id="orbit" cx="120" cy="120" r="86" stroke="#111827" stroke-width="2" stroke-dasharray="6 12" opacity="0.25"/>
+  <g id="badge"><rect x="55" y="70" width="130" height="80" rx="22" fill="#EF4444"/><text x="120" y="118" text-anchor="middle" font-size="34" font-weight="800" fill="#FFFFFF">SALE</text></g>
+  <text id="date" x="120" y="175" text-anchor="middle" font-size="16" font-weight="600" fill="#111827">Starts Nov 14</text>
+  <circle id="dot-1" cx="60" cy="60" r="6" fill="#F59E0B"/>
+  <circle id="dot-2" cx="180" cy="60" r="6" fill="#10B981"/>
+  <circle id="dot-3" cx="60" cy="180" r="6" fill="#3B82F6"/>
+</svg>`,
+    tracks: [
+      { target: "badge", property: "scale", keyframes: [{ t: 0, v: 1, ease: easeInOut }, { t: 0.5, v: 1.06, ease: easeInOut }, { t: 1, v: 1 }] },
+      { target: "badge", property: "rotate", keyframes: [{ t: 0, v: -3, ease: easeInOut }, { t: 0.5, v: 3, ease: easeInOut }, { t: 1, v: -3 }] },
+      { target: "orbit", property: "rotate", keyframes: [{ t: 0, v: 0, ease: "linear" }, { t: 1, v: 360 }] },
+      { target: "date", property: "opacity", keyframes: [{ t: 0, v: 0.6, ease: easeInOut }, { t: 0.5, v: 1, ease: easeInOut }, { t: 1, v: 0.6 }] },
+      { target: "dot-1", property: "translateY", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.5, v: -8, ease: easeInOut }, { t: 1, v: 0 }] },
+      { target: "dot-2", property: "translateY", keyframes: [{ t: 0, v: -6, ease: easeInOut }, { t: 0.5, v: 4, ease: easeInOut }, { t: 1, v: -6 }] },
+    ],
+  },
+
   /* Hand-drawn loader: a rocket climbing past speed streaks. Replaces the
      imported jet export, whose silhouette read as a plane rather than a
      rocket. */
@@ -981,52 +1028,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
       { target: "wave-3", property: "translateY", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.25, v: 22, ease: easeInOut }, { t: 0.5, v: 0, ease: easeInOut }, { t: 0.75, v: -22, ease: easeInOut }, { t: 1, v: 0 }] },
       { target: "wave-4", property: "translateY", keyframes: [{ t: 0, v: 18, ease: easeInOut }, { t: 0.25, v: 0, ease: easeInOut }, { t: 0.5, v: -22, ease: easeInOut }, { t: 0.75, v: 0, ease: easeInOut }, { t: 1, v: 18 }] },
       { target: "wave-5", property: "translateY", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.25, v: -22, ease: easeInOut }, { t: 0.5, v: 0, ease: easeInOut }, { t: 0.75, v: 22, ease: easeInOut }, { t: 1, v: 0 }] },
-    ],
-  },
-  {
-    id: "happy-birthday",
-    label: "Happy birthday card",
-    hint: "A popping title, floating balloons and a cake.",
-    icon: "heart",
-    duration: 3000,
-    loop: true,
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
-  <rect id="card" x="30" y="40" width="180" height="160" rx="20" fill="#FFF7ED" stroke="#FDBA74" stroke-width="3"/>
-  <text id="hb-text" x="120" y="95" text-anchor="middle" font-size="22" font-weight="700" fill="#EA580C">Happy Birthday</text>
-  <g id="balloon-1"><ellipse cx="70" cy="60" rx="16" ry="20" fill="#F43F5E"/><path d="M70 80 L70 110" stroke="#F43F5E" stroke-width="2"/></g>
-  <g id="balloon-2"><ellipse cx="170" cy="55" rx="16" ry="20" fill="#3B82F6"/><path d="M170 75 L170 110" stroke="#3B82F6" stroke-width="2"/></g>
-  <g id="cake"><rect x="90" y="150" width="60" height="30" rx="6" fill="#FCD34D"/><rect x="100" y="140" width="40" height="12" rx="4" fill="#F87171"/><rect x="118" y="132" width="4" height="10" fill="#FBBF24"/></g>
-</svg>`,
-    tracks: [
-      { target: "hb-text", property: "scale", keyframes: [{ t: 0, v: 0.6, ease: easeBack }, { t: 0.25, v: 1.05, ease: easeOut }, { t: 0.4, v: 1 }, { t: 1, v: 1 }] },
-      { target: "hb-text", property: "opacity", keyframes: [{ t: 0, v: 0, ease: easeOut }, { t: 0.2, v: 1 }, { t: 1, v: 1 }] },
-      { target: "balloon-1", property: "translateY", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.5, v: -10, ease: easeInOut }, { t: 1, v: 0 }] },
-      { target: "balloon-2", property: "translateY", keyframes: [{ t: 0, v: -6, ease: easeInOut }, { t: 0.5, v: 4, ease: easeInOut }, { t: 1, v: -6 }] },
-      { target: "cake", property: "scale", keyframes: [{ t: 0, v: 0.85, ease: easeBack }, { t: 0.3, v: 1.02, ease: easeOut }, { t: 0.5, v: 1 }, { t: 1, v: 1 }] },
-    ],
-  },
-  {
-    id: "sale-starts-nov14",
-    label: "Sale starts Nov 14",
-    hint: "A bold sale badge counting down to launch day.",
-    icon: "bolt",
-    duration: 2600,
-    loop: true,
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
-  <circle id="orbit" cx="120" cy="120" r="86" stroke="#111827" stroke-width="2" stroke-dasharray="6 12" opacity="0.25"/>
-  <g id="badge"><rect x="55" y="70" width="130" height="80" rx="22" fill="#EF4444"/><text x="120" y="118" text-anchor="middle" font-size="34" font-weight="800" fill="#FFFFFF">SALE</text></g>
-  <text id="date" x="120" y="175" text-anchor="middle" font-size="16" font-weight="600" fill="#111827">Starts Nov 14</text>
-  <circle id="dot-1" cx="60" cy="60" r="6" fill="#F59E0B"/>
-  <circle id="dot-2" cx="180" cy="60" r="6" fill="#10B981"/>
-  <circle id="dot-3" cx="60" cy="180" r="6" fill="#3B82F6"/>
-</svg>`,
-    tracks: [
-      { target: "badge", property: "scale", keyframes: [{ t: 0, v: 1, ease: easeInOut }, { t: 0.5, v: 1.06, ease: easeInOut }, { t: 1, v: 1 }] },
-      { target: "badge", property: "rotate", keyframes: [{ t: 0, v: -3, ease: easeInOut }, { t: 0.5, v: 3, ease: easeInOut }, { t: 1, v: -3 }] },
-      { target: "orbit", property: "rotate", keyframes: [{ t: 0, v: 0, ease: "linear" }, { t: 1, v: 360 }] },
-      { target: "date", property: "opacity", keyframes: [{ t: 0, v: 0.6, ease: easeInOut }, { t: 0.5, v: 1, ease: easeInOut }, { t: 1, v: 0.6 }] },
-      { target: "dot-1", property: "translateY", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.5, v: -8, ease: easeInOut }, { t: 1, v: 0 }] },
-      { target: "dot-2", property: "translateY", keyframes: [{ t: 0, v: -6, ease: easeInOut }, { t: 0.5, v: 4, ease: easeInOut }, { t: 1, v: -6 }] },
     ],
   },
 ];
