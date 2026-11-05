@@ -2,7 +2,6 @@ import { useT } from "@agent-native/core/client/i18n";
 import { callAction, useActionMutation, useActionQuery } from "@agent-native/core/client/hooks";
 import { OrgSwitcher } from "@agent-native/toolkit/app/org";
 import { openCommandMenu } from "@agent-native/toolkit/app/shared";
-import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
 import {
   IconDownload,
   IconDots,
@@ -16,6 +15,7 @@ import {
 } from "@tabler/icons-react";
 import { Link, useLocation, useNavigate } from "react-router";
 
+import { AppMark } from "@/components/brand/AppMark";
 import {
   Tooltip,
   TooltipContent,
@@ -25,6 +25,7 @@ import { APP_TITLE } from "@/lib/app-config";
 import { toAnimatedSvg } from "../../../lib/motion";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { startFreshStudioChat } from "@/lib/studio-chat";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,6 +80,8 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
         loop: true,
       });
       if (res?.id) {
+        // A brand-new project must not inherit the previous chat thread.
+        startFreshStudioChat();
         await projects.refetch();
         navigate(`/motion?id=${encodeURIComponent(res.id)}`);
       }
@@ -362,10 +365,7 @@ export function Sidebar({
                 aria-label={APP_TITLE}
                 className="flex size-8 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
               >
-                <AgentNativeIcon
-                  aria-hidden="true"
-                  className="h-3.5 w-6 text-sidebar-accent-foreground"
-                />
+                <AppMark className="h-3.5 w-6 text-sidebar-accent-foreground" />
               </Link>
             </TooltipTrigger>
             <TooltipContent side="right">{APP_TITLE}</TooltipContent>
@@ -375,10 +375,7 @@ export function Sidebar({
             to="/home"
             className="flex min-w-0 flex-1 items-center gap-3 rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
           >
-            <AgentNativeIcon
-              aria-hidden="true"
-              className="h-3.5 w-6 shrink-0 text-sidebar-accent-foreground"
-            />
+            <AppMark className="h-3.5 w-6 shrink-0 text-sidebar-accent-foreground" />
             <span className="truncate text-sm font-semibold text-sidebar-accent-foreground">
               {APP_TITLE}
             </span>

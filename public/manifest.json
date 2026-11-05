@@ -1,7 +1,7 @@
 {
-  "name": "Agent Native Hackathon",
-  "short_name": "Agent Native Hackathon",
-  "description": "Workspace app for Agent Native Hackathon.",
+  "name": "SVG MOTION",
+  "short_name": "SVG MOTION",
+  "description": "A professional SVG animation studio. Draw or import vector art, key it with bezier easing, and export optimized SVG, CSS, or JS.",
   "start_url": "./home",
   "background_color": "#111111",
   "theme_color": "#18181B",

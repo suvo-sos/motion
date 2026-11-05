@@ -23,7 +23,7 @@ For custom branding, keep `server/plugins/agent-native-email-branding.ts` aligne
 - `home` is the project launcher at `/home`: prompt composer, template buttons, and the project grid.
 - `motion` is the studio at `/motion?id=<id>`: full-bleed editor with the AgentSidebar on the right.
 - `chat` is the full-screen chat at `/chat` and `/chat/<threadId>`. The home composer hands a prompt off to a chat thread, where the agent creates the project and typically navigates into the studio.
-- `/` opens shared sign-in/signup and lands on `/home`.
+- `/` redirects straight to `/home`; local demo mode disables the auth wall via `AUTH_DISABLED=true`.
 - Use `navigate` when supported and `view-screen` for a fresh read of visible details; basic navigation is already in `<current-screen>`.
 
 ## App shell

@@ -2,6 +2,21 @@
 
 All notable user-facing changes to this app are documented here.
 
+## 2026-11-05
+
+### Added
+
+- Timeline zoom, pan, and fit controls, plus a frame-rate selector, frame stepping, and snapping to frames, keyframes, and clip edges.
+- Multi-select keyframes with group drag, delete, copy, and paste.
+- Element tagging stacks every selected element as a chip in the agent composer, and the Elements header has a Definitions help popover.
+- The Projects gallery now uses the same card language as the template gallery.
+
+### Changed
+
+- Timeline readouts use total seconds plus milliseconds instead of frame timecode.
+- Refreshed the SVG MOTION brand icons and removed the unused Brand logo reveal starter.
+- Removed the dev-only React 19 script-tag warning from the console.
+
 ## 2026-11-03
 
 ### Added

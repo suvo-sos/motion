@@ -24,7 +24,7 @@ import type { LinksFunction } from "react-router";
 import { Layout as AppLayout } from "@/components/layout/Layout";
 import { AppToolkitProvider } from "@/components/ui/toolkit-provider";
 import { useNavigationState } from "@/hooks/use-navigation-state";
-import { APP_TITLE } from "@/lib/app-config";
+import { APP_DESCRIPTION, APP_TITLE } from "@/lib/app-config";
 import {
   HOME_PATH,
   isChatPathname,
@@ -41,14 +41,20 @@ import stylesheet from "./global.css?url";
 configureTracking({
   getDefaultProps: (_name, properties) => ({
     ...properties,
-    app: "agent-native-hackathon",
+    app: "svg-motion",
     template: "chat",
   }),
 });
 
 export const links: LinksFunction = () => [
   { rel: "stylesheet", href: stylesheet },
+  { rel: "manifest", href: appPath("/manifest.json") },
 ];
+
+/** Fallback document title for routes that don't set their own. */
+export function meta() {
+  return [{ title: APP_TITLE }];
+}
 
 const THEME_INIT_SCRIPT = getThemeInitScript();
 const LOCALE_INIT_SCRIPT = getLocaleInitScript();
@@ -72,6 +78,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
           dangerouslySetInnerHTML={{ __html: LOCALE_INIT_SCRIPT }}
         />
         <meta name="theme-color" content="#18181B" />
+        <meta name="application-name" content={APP_TITLE} />
+        <meta name="description" content={APP_DESCRIPTION} />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta
           name="apple-mobile-web-app-status-bar-style"

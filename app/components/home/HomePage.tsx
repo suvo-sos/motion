@@ -10,7 +10,6 @@ import { CoreComposerRuntimeProvider } from "@agent-native/toolkit/app/chat/agen
 import { CoreAgentKitRoot } from "@agent-native/toolkit/app/chat/agentkit-chat/index";
 import { useRealtimeVoiceModeOptional } from "@agent-native/toolkit/app/chat/composer";
 import { WaveBackground } from "@agent-native/toolkit/app/shared";
-import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
 import {
   IconArrowUpRight,
   IconBallTennis,
@@ -23,10 +22,11 @@ import {
   IconSparkles,
   IconUpload,
 } from "@tabler/icons-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Button } from "@/components/ui/button";
+import { AppMark } from "@/components/brand/AppMark";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getChatHomeThreadId, rememberLastChatThread } from "@/lib/chat-home-thread";
 import { startFreshStudioChat } from "@/lib/studio-chat";
@@ -46,7 +46,7 @@ import {
 } from "../../../lib/templates";
 
 const COMPOSER_PLACEHOLDER =
-  "Describe an animation — a logo reveal, a bouncing loader, a sticker pop…";
+  "e.g. 1.4s logo reveal — outline draws on, mark scales in, cubic ease-out";
 
 /**
  * Template previews run on a slowed clock so browsing them reads as motion
@@ -55,6 +55,13 @@ const COMPOSER_PLACEHOLDER =
  */
 const PREVIEW_SPEED = 2.2;
 const PREVIEW_SLOW_MAX_MS = 8000;
+
+/** Shared preview clock: long choreographies keep their real pace. */
+function previewDuration(duration: number): number {
+  return duration <= PREVIEW_SLOW_MAX_MS
+    ? Math.round(duration * PREVIEW_SPEED)
+    : duration;
+}
 
 /**
  * The big exports are fetched once per session: they carry ~1 MB of embedded
@@ -83,6 +90,60 @@ const TEMPLATE_ICONS: Record<TemplateIconName, typeof IconSparkles> = {
   orbit: IconPlanet,
   ball: IconBallTennis,
 };
+
+/** Canvas colours for template cards — hand-picked so each art reads on its card. */
+const TEMPLATE_CANVAS_COLORS: Record<string, string> = {
+  "cup-game-loader": "#2391FF",
+  "discount-promo": "#EFECD7",
+  "rocket-loader": "#00B7CD",
+  "countdown-loader": "#E3AFC9",
+  "app-download-promo": "#FFCD54",
+  "logo-reveal": "#FFF83F",
+  "loading-dots": "#FFF1D1",
+  "sticker-pop": "#FF9100",
+  "spinner": "#E11A45",
+  "equalizer": "#F70063",
+  "heartbeat": "#00B7CD",
+  "orbit": "#EDC92C",
+  "bounce": "#E3AFC9",
+};
+
+function templateCanvasColor(id: string): string {
+  const color = TEMPLATE_CANVAS_COLORS[id];
+  if (color) return color;
+  return [
+    "#2391FF",
+    "#FFF83F",
+    "#FFCD54",
+    "#F70063",
+    "#DF301C",
+    "#FF9100",
+    "#FFF1D1",
+    "#00B7CD",
+    "#E11A45",
+    "#E3AFC9",
+    "#EFECD7",
+    "#EDC92C",
+  ][Math.abs(hashString(id)) % 12] as string;
+}
+
+function hashString(value: string): number {
+  let h = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    h = (h << 5) - h + value.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
+function isLightColor(hex: string): boolean {
+  const cleaned = hex.replace("#", "");
+  const r = parseInt(cleaned.slice(0, 2), 16);
+  const g = parseInt(cleaned.slice(2, 4), 16);
+  const b = parseInt(cleaned.slice(4, 6), 16);
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return lum > 0.6;
+}
 
 interface ProjectSummary extends MotionAnimation {
   updatedAt?: string;
@@ -192,16 +253,14 @@ export default function HomePage() {
           matchPageSurface
           className="pointer-events-none absolute inset-0 -z-10"
         />
-        <AgentNativeIcon
-          aria-hidden="true"
-          className="h-8 w-14 text-foreground"
-        />
+        <AppMark className="h-8 w-14 text-foreground" />
         <h1 className="max-w-2xl text-4xl font-semibold tracking-tight sm:text-5xl">
-          Describe it. Watch it move.
+          Professional-grade SVG animation at your fingertips.
         </h1>
         <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-          The agent draws the SVG and writes the keyframes. You shape the timing
-          on the timeline, then export a standalone animated SVG.
+          Start with the pen tool, an existing file, or a prompt. Set timing with
+          bezier easing on a real timeline, then export optimized SVG, CSS, or JS
+          that ships anywhere.
         </p>
         <HomeAgentComposer threadId={threadId} onStart={start} />
       </section>
@@ -225,7 +284,7 @@ export default function HomePage() {
               count={projects.length}
               onClick={() => setView("projects")}
             >
-              My projects
+              Projects
             </TabButton>
           </div>
           <div className="flex items-center gap-3">
@@ -258,22 +317,16 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className={cn("grid gap-4 sm:grid-cols-2 lg:grid-cols-3", view !== "templates" && "hidden")}>
-          {MOTION_TEMPLATES.map((template) => (
-            <TemplateCard
-              key={template.id}
-              template={template}
-              busy={creatingTemplate === template.id}
-              disabled={creatingTemplate !== null}
-              onUse={() => void createFromTemplate(template)}
-            />
-          ))}
-        </div>
+        <TemplateGallery
+          hidden={view !== "templates"}
+          busyId={creatingTemplate}
+          onUse={(template) => void createFromTemplate(template)}
+        />
 
         {projectsQuery.isLoading && projects.length === 0 ? (
-          <div className={cn("grid gap-4 sm:grid-cols-2 lg:grid-cols-3", view !== "projects" && "hidden")}>
+          <div className={cn("grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3", view !== "projects" && "hidden")}>
             {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-48 rounded-lg" />
+              <Skeleton key={i} className="aspect-[4/3] rounded-3xl" />
             ))}
           </div>
         ) : projects.length === 0 ? (
@@ -284,8 +337,8 @@ export default function HomePage() {
             <div className="space-y-1">
               <p className="text-sm font-medium">No projects yet</p>
               <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-                Pick a template to open a ready-made animation, or describe your
-                own and the agent will build it.
+                Start from a preset, upload an SVG, or describe the motion. Every
+                keyframe and bezier curve stays editable.
               </p>
             </div>
             <Button
@@ -297,11 +350,7 @@ export default function HomePage() {
             </Button>
           </div>
         ) : (
-          <div className={cn("grid gap-4 sm:grid-cols-2 lg:grid-cols-3", view !== "projects" && "hidden")}>
-            {projects.map((project) => (
-              <ProjectCard key={project.id} project={project} />
-            ))}
-          </div>
+          <ProjectGallery projects={projects} hidden={view !== "projects"} />
         )}
       </section>
     </div>
@@ -382,79 +431,210 @@ function TemplateCard({
 
   const src = useMemo(() => {
     if (!svg) return null;
-    const previewDuration =
-      template.duration <= PREVIEW_SLOW_MAX_MS
-        ? Math.round(template.duration * PREVIEW_SPEED)
-        : template.duration;
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
       toAnimatedSvg({
         id: template.id,
         title: template.label,
         svg,
         tracks: template.tracks ?? [],
-        duration: previewDuration,
+        duration: previewDuration(template.duration),
         loop: template.loop,
       }),
     )}`;
   }, [svg, template]);
 
   const Icon = TEMPLATE_ICONS[template.icon];
+  const artboard = artboardSize(template);
+  const aspectRatio = Math.min(
+    1.85,
+    Math.max(0.6, artboard.width / artboard.height),
+  );
+
+  const canvasColor = templateCanvasColor(template.id);
+  const light = isLightColor(canvasColor);
 
   return (
     <button
       type="button"
       onClick={onUse}
       disabled={disabled}
-      className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-70"
+      aria-label={`Open the ${template.label} template`}
+      style={{ aspectRatio: `${aspectRatio}`, backgroundColor: canvasColor }}
+      className={cn(
+        "group relative block w-full overflow-hidden rounded-3xl border text-left",
+        light ? "border-black/5" : "border-white/10",
+        "transition-[border-color,box-shadow,transform] duration-300 ease-out",
+        "hover:-translate-y-0.5 hover:shadow-[0_22px_45px_-30px_rgb(0_0_0/0.6)]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "disabled:cursor-not-allowed disabled:opacity-70",
+      )}
     >
-      <div className="relative aspect-[16/10] overflow-hidden bg-muted">
-        <div
-          className="absolute inset-0 opacity-60"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at center, hsl(var(--border)) 1px, transparent 1px)",
-            backgroundSize: "18px 18px",
-          }}
+      {/* Stage: faint grid, faded to the edges so the art floats. */}
+      <span
+        aria-hidden="true"
+        className="absolute inset-0 opacity-50 [mask-image:radial-gradient(circle_at_50%_45%,#000_10%,transparent_78%)]"
+        style={{
+          backgroundImage: light
+            ? "linear-gradient(rgba(0,0,0,0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.10) 1px, transparent 1px)"
+            : "linear-gradient(rgba(255,255,255,0.14) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px)",
+          backgroundSize: "22px 22px",
+        }}
+      />
+
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="absolute inset-0 size-full object-contain transition-transform duration-500 ease-out group-hover:scale-[1.02]"
         />
-        {src ? (
-          <img
-            src={src}
-            alt={`${template.label} preview`}
-            loading="lazy"
-            className="relative h-full w-full object-contain p-5"
-          />
-        ) : (
-          <span className="absolute inset-0 grid place-items-center">
-            <IconLoader2 className="size-4 animate-spin text-muted-foreground" />
-          </span>
-        )}
-        <span className="absolute right-2 top-2 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground backdrop-blur">
-          {template.loop ? "loop" : "once"}
+      ) : (
+        <span className="absolute inset-0 grid place-items-center">
+          <IconLoader2 className="size-4 animate-spin text-muted-foreground" />
         </span>
-        {busy ? (
-          <span className="absolute inset-0 grid place-items-center bg-background/70 backdrop-blur-sm">
-            <IconLoader2 className="size-5 animate-spin text-foreground" />
+      )}
+
+      {/* Caption: always on for touch, slides in on hover/focus for pointers. */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/45 to-transparent transition-opacity duration-300 md:opacity-0 md:group-hover:opacity-100 md:group-focus-visible:opacity-100"
+      />
+      <span className="absolute inset-x-0 bottom-0 block p-3.5 text-white transition-all duration-300 md:translate-y-1.5 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100 md:group-focus-visible:translate-y-0 md:group-focus-visible:opacity-100">
+        <span className="flex items-center gap-1.5">
+          <Icon className="size-3.5 shrink-0 text-white/70" strokeWidth={1.8} />
+          <span className="truncate text-[13px] font-semibold tracking-tight">
+            {template.label}
           </span>
-        ) : null}
-      </div>
-      <div className="flex items-center justify-between gap-2 px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.8} />
-          <div className="min-w-0">
-            <div className="truncate text-[13px] font-medium">
-              {template.label}
-            </div>
-            <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-              {template.hint}
-            </div>
-          </div>
-        </div>
-        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-          {(template.duration / 1000).toFixed(1)}s
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            <span className="text-[10px] font-medium tabular-nums text-white/70">
+              {(template.duration / 1000).toFixed(1)}s
+            </span>
+            <span className="rounded-full bg-white/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white/75">
+              {template.loop ? "loop" : "once"}
+            </span>
+          </span>
         </span>
-      </div>
+        <span className="mt-1 line-clamp-2 block text-[11px] leading-relaxed text-white/70">
+          {template.hint}
+        </span>
+      </span>
+
+      {busy ? (
+        <span className="absolute inset-0 grid place-items-center bg-background/60 backdrop-blur-sm">
+          <IconLoader2 className="size-5 animate-spin text-foreground" />
+        </span>
+      ) : null}
     </button>
   );
+}
+
+/**
+ * Templates are laid out masonry-style: every preview keeps its artboard ratio
+ * and cards drop into the shortest column, so the gallery reads left-to-right
+ * while the columns stay balanced.
+ */
+function TemplateGallery({
+  hidden,
+  busyId,
+  onUse,
+}: {
+  hidden: boolean;
+  busyId: string | null;
+  onUse: (template: MotionTemplate) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const columns = useGalleryColumns(ref);
+  const buckets = useMemo(
+    () => distributeItems(MOTION_TEMPLATES, columns, artboardSize),
+    [columns],
+  );
+
+  return (
+    <div ref={ref} className={cn("items-start gap-2.5", hidden ? "hidden" : "flex")}>
+      {buckets.map((bucket, index) => (
+        <div key={index} className="flex min-w-0 flex-1 flex-col gap-2.5">
+          {bucket.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              busy={busyId === template.id}
+              disabled={busyId !== null}
+              onUse={() => onUse(template)}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Column count from the container width, so galleries never depend on breakpoints. */
+function useGalleryColumns(ref: RefObject<HTMLDivElement | null>) {
+  const [columns, setColumns] = useState(3);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const width = el.clientWidth;
+      // Hidden tabs report 0 — keep the last good column count.
+      if (width <= 0) return;
+      setColumns(width < 480 ? 1 : width < 820 ? 2 : 3);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return columns;
+}
+
+/** Balance cards into columns using each item's artboard ratio as its height. */
+function distributeItems<T>(
+  items: T[],
+  columns: number,
+  artboardOf: (item: T) => { width: number; height: number },
+): T[][] {
+  const buckets = Array.from({ length: columns }, () => ({
+    items: [] as T[],
+    height: 0,
+  }));
+  for (const item of items) {
+    const target = buckets.reduce((a, b) => (a.height <= b.height ? a : b));
+    target.items.push(item);
+    const artboard = artboardOf(item);
+    // Relative height at a shared column width: tall art stacks lower.
+    target.height += artboard.height / artboard.width;
+  }
+  return buckets.map((bucket) => bucket.items);
+}
+
+function artboardSize(artboard: {
+  width?: number | undefined;
+  height?: number | undefined;
+  svg?: string | undefined;
+}): { width: number; height: number } {
+  if (artboard.width && artboard.height) {
+    return { width: artboard.width, height: artboard.height };
+  }
+  const box = artboard.svg
+    ? /viewBox=["']([^"']+)["']/
+        .exec(artboard.svg)?.[1]
+        ?.trim()
+        .split(/[\s,]+/)
+        .map(Number)
+    : null;
+  const width = box?.[2];
+  const height = box?.[3];
+  if (
+    typeof width === "number" &&
+    typeof height === "number" &&
+    width > 0 &&
+    height > 0
+  ) {
+    return { width, height };
+  }
+  return { width: 3, height: 2 };
 }
 
 function HomeAgentComposer({
@@ -557,53 +737,122 @@ function HomeAgentComposerInput({
   );
 }
 
+function ProjectGallery({
+  projects,
+  hidden,
+}: {
+  projects: ProjectSummary[];
+  hidden: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const columns = useGalleryColumns(ref);
+  const buckets = useMemo(
+    () => distributeItems(projects, columns, artboardSize),
+    [projects, columns],
+  );
+
+  return (
+    <div
+      ref={ref}
+      className={cn("items-start gap-2.5", hidden ? "hidden" : "flex")}
+    >
+      {buckets.map((bucket, index) => (
+        <div key={index} className="flex min-w-0 flex-1 flex-col gap-2.5">
+          {bucket.map((project) => (
+            <ProjectCard key={project.id} project={project} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Saved projects use the same gallery language as templates: the art fills a
+ * rounded colour stage, plays its motion continuously, and the caption slides
+ * in on hover. Projects keep their own title and save time instead of a hint.
+ */
 function ProjectCard({ project }: { project: ProjectSummary }) {
-  const [hover, setHover] = useState(false);
-  const staticSrc = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-    project.svg,
-  )}`;
-  const animatedSrc = hover
-    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-        toAnimatedSvg(project),
-      )}`
-    : staticSrc;
+  const src = useMemo(
+    () =>
+      `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+        toAnimatedSvg({
+          ...project,
+          duration: previewDuration(project.duration),
+        }),
+      )}`,
+    [project],
+  );
+
+  const artboard = artboardSize(project);
+  const aspectRatio = Math.min(
+    1.85,
+    Math.max(0.6, artboard.width / artboard.height),
+  );
+  const canvasColor = templateCanvasColor(project.id);
+  const light = isLightColor(canvasColor);
 
   return (
     <Link
       to={`/motion?id=${encodeURIComponent(project.id)}`}
       onClick={startFreshStudioChat}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      style={{ aspectRatio: `${aspectRatio}`, backgroundColor: canvasColor }}
+      className={cn(
+        "group relative block w-full overflow-hidden rounded-3xl border text-left",
+        light ? "border-black/5" : "border-white/10",
+        "transition-[border-color,box-shadow,transform] duration-300 ease-out",
+        "hover:-translate-y-0.5 hover:shadow-[0_22px_45px_-30px_rgb(0_0_0/0.6)]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+      )}
     >
-      <div className="relative aspect-[16/10] overflow-hidden bg-muted">
-        <div
-          className="absolute inset-0 opacity-60"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at center, hsl(var(--border)) 1px, transparent 1px)",
-            backgroundSize: "18px 18px",
-          }}
-        />
-        <img
-          src={animatedSrc}
-          alt=""
-          className="relative h-full w-full object-contain p-5"
-        />
-        <span className="absolute right-2 top-2 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground backdrop-blur">
-          {project.loop ? "loop" : "once"}
+      {/* Stage: faint grid, faded to the edges so the art floats. */}
+      <span
+        aria-hidden="true"
+        className="absolute inset-0 opacity-50 [mask-image:radial-gradient(circle_at_50%_45%,#000_10%,transparent_78%)]"
+        style={{
+          backgroundImage: light
+            ? "linear-gradient(rgba(0,0,0,0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.10) 1px, transparent 1px)"
+            : "linear-gradient(rgba(255,255,255,0.14) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px)",
+          backgroundSize: "22px 22px",
+        }}
+      />
+
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        draggable={false}
+        className="absolute inset-0 size-full object-contain transition-transform duration-500 ease-out group-hover:scale-[1.02]"
+      />
+
+      {/* Caption: always on for touch, slides in on hover/focus for pointers. */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/45 to-transparent transition-opacity duration-300 md:opacity-0 md:group-hover:opacity-100 md:group-focus-visible:opacity-100"
+      />
+      <span className="absolute inset-x-0 bottom-0 block p-3.5 text-white transition-all duration-300 md:translate-y-1.5 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100 md:group-focus-visible:translate-y-0 md:group-focus-visible:opacity-100">
+        <span className="flex items-center gap-1.5">
+          <IconSparkles
+            className="size-3.5 shrink-0 text-white/70"
+            strokeWidth={1.8}
+          />
+          <span className="truncate text-[13px] font-semibold tracking-tight">
+            {project.title}
+          </span>
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            <span className="text-[10px] font-medium tabular-nums text-white/70">
+              {(project.duration / 1000).toFixed(1)}s
+            </span>
+            <span className="rounded-full bg-white/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white/75">
+              {project.loop ? "loop" : "once"}
+            </span>
+          </span>
         </span>
-      </div>
-      <div className="flex items-center justify-between gap-2 px-3 py-2.5">
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-medium">{project.title}</div>
-          <div className="mt-0.5 text-[10px] text-muted-foreground">
-            {(project.duration / 1000).toFixed(2)}s ·{" "}
-            {relativeTime(project.updatedAt)}
-          </div>
-        </div>
-        <IconArrowUpRight className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
-      </div>
+        <span className="mt-1 flex items-center gap-1 text-[11px] leading-relaxed text-white/70">
+          Saved {relativeTime(project.updatedAt)}
+          <IconArrowUpRight className="size-3 shrink-0" strokeWidth={1.8} />
+        </span>
+      </span>
     </Link>
   );
 }

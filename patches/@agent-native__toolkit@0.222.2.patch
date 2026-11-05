@@ -1,0 +1,50 @@
+diff --git a/dist/composer/TiptapComposer.js b/dist/composer/TiptapComposer.js
+index e37186aa724854a256b0132c96449444a74e2321..008d6a2b9383bc2a2a6ea2ca3804deb697ef99f2 100644
+--- a/dist/composer/TiptapComposer.js
++++ b/dist/composer/TiptapComposer.js
+@@ -2479,14 +2479,28 @@ function TiptapComposerSurface({ placeholder, replyPlaceholder, conversationStar
+         if (normalized.relatedReferences?.some((item) => item.slotKey)) {
+             updateSlotReferences((current) => applySlotReferenceChanges(current, normalized.relatedReferences ?? []));
+         }
+-        ed.chain()
++        // Insert the primary mention plus any non-slot related references as
++        // chips in the same transaction, so a multi-selection tags every
++        // element in one pass instead of being blocked by the empty-composer
++        // guard after the first chip.
++        let chain = ed.chain()
+             .focus()
+             .insertContent({
+             type: "mentionReference",
+             attrs: mentionReferenceAttrs(normalized),
+         })
+-            .insertContent(" ")
+-            .run();
++            .insertContent(" ");
++        for (const related of normalized.relatedReferences ?? []) {
++            if (related.slotKey)
++                continue;
++            chain = chain
++                .insertContent({
++                type: "mentionReference",
++                attrs: mentionReferenceAttrs(related),
++            })
++                .insertContent(" ");
++        }
++        chain.run();
+         setEditorHasText(true);
+     }, [editor, updateSlotReferences]);
+     const insertReferenceIfEmpty = useCallback((payload) => {
+@@ -2508,7 +2522,12 @@ function TiptapComposerSurface({ placeholder, replyPlaceholder, conversationStar
+         }
+         if (composerAttachments.length > 0)
+             return;
+-        if (composerDocumentHasContent(ed.state.doc))
++        // Element/colour tags are additive: the user builds one prompt by
++        // tagging several elements (and may already have typed text), so let
++        // the chip append instead of only landing in an empty composer.
++        const appendableTag = normalized?.refType === "motion-element" ||
++            normalized?.refType === "motion-color";
++        if (composerDocumentHasContent(ed.state.doc) && !appendableTag)
+             return;
+         insertReference(payload);
+     }, [composerAttachments.length, disabled, editor, insertReference]);

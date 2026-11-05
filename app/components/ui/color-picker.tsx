@@ -231,21 +231,19 @@ export function ColorPicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         {variant === "swatch" ? (
-          <Button
+          <button
             type="button"
-            variant="outline"
-            size="icon"
-            className="relative group size-8 shrink-0 p-1"
+            className="relative group grid size-8 shrink-0 place-items-center rounded-full bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2391FF]/50"
             aria-label={label ?? "Pick a color"}
           >
-            <span className="motion-checkerboard block size-full overflow-hidden rounded-[3px] border border-border">
+            <span className="motion-checkerboard block size-5 overflow-hidden rounded-full border border-border">
               <span
                 className="block size-full"
                 style={isNone ? NONE_SWATCH_STYLE : { backgroundColor: value }}
               />
             </span>
             <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">{label ?? "Pick a color"}</span>
-          </Button>
+          </button>
         ) : (
           <Button
             type="button"

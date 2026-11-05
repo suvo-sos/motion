@@ -67,36 +67,22 @@ export default defineAction({
   run: async ({ id, title, svg, tracks, duration, loop, expectedUpdatedAt }, ctx) => {
     const db = getDb();
     const now = new Date().toISOString();
-    
-    // Log what we're receiving for debugging
-    console.log('\n🔍 save-animation called:', {
-      id: id || '(new)',
-      title,
-      svgLength: svg.length,
-      svgPreview: svg.substring(0, 300),
-      hasScript: svg.includes('<script'),
-      hasViewBox: svg.includes('viewBox'),
-      tracksCount: tracks.length,
-    });
-    
-    // Remove script tags from SVG to prevent React rendering issues
-    // React refuses to render SVG with script tags for security reasons
+
+    // Remove script tags from SVG to prevent React rendering issues.
+    // React refuses to render SVG with script tags for security reasons.
     let cleanSvg = svg;
     if (cleanSvg.includes('<script')) {
-      console.log('⚠️  Removing script tags from SVG');
       cleanSvg = cleanSvg.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
       cleanSvg = cleanSvg.replace(/<script[^>]*>/gi, '');
       cleanSvg = cleanSvg.replace(/<\/script>/gi, '');
     }
-    
-    // Validate SVG has basic structure
+
+    // Validate SVG has basic structure.
     if (!cleanSvg.includes('<svg')) {
-      console.error('❌ SVG missing <svg> tag!');
       throw new Error('Invalid SVG: missing <svg> tag');
     }
-    
+
     svg = cleanSvg;
-    console.log('✅ SVG validated and cleaned\n');
 
     if (id) {
       const existing = await db

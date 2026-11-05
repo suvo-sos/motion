@@ -1,9 +1,8 @@
 import HomePage from "@/components/home/HomePage";
-import { APP_TITLE } from "@/lib/app-config";
+import { APP_DESCRIPTION, APP_TITLE } from "@/lib/app-config";
 
-const SEO_TITLE = `${APP_TITLE} — Agent-Native SVG Animation`;
-const SEO_DESCRIPTION =
-  "Describe an animation and the agent draws the SVG and writes the keyframes. Shape it on the timeline, then export a standalone animated SVG.";
+const SEO_TITLE = `${APP_TITLE} — Professional SVG animation studio`;
+const SEO_DESCRIPTION = APP_DESCRIPTION;
 
 export function meta() {
   return [

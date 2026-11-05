@@ -7,26 +7,44 @@ An agent-native SVG animation studio where you describe motion and the agent cre
 ## Features
 
 - 🎨 **AI-Powered Animation**: Describe any animation and watch the agent create it
-- ⏱️ **Timeline Editor**: Professional keyframe editing with easing controls
-- 🎯 **Precision Tools**: Transform, node editing, align, distribute, and snap-to-grid
+- ⏱️ **Timeline Editor**: Zoom, pan, frame stepping, snapping, and multi-keyframe editing with easing controls
+- 🎯 **Precision Tools**: Transform, node editing, align, distribute, and snap to frames, keyframes, and clip edges
 - 📐 **Drawing Tools**: Pen tool, shapes (rectangles, circles, stars), and text
 - 🖼️ **Image Support**: Drag-and-drop images with smart positioning
 - 🎬 **Layer Management**: Full layer control with bring to front/send to back
+- 🏷️ **Element Tagging**: Right-click elements or groups to tag several of them as chips in one agent prompt
 - 📤 **SVG Export**: Export standalone animated SVG files
 - 🔄 **Real-time Sync**: Changes sync instantly across all sessions
 - 💾 **Auto-save**: All projects saved automatically
 
-## Develop locally
+## Run this project
 
-Scaffold your own copy and run it:
+Requirements: Node.js 22+ and pnpm (`corepack enable`).
 
 ```bash
-npx --yes @agent-native/core@latest create my-svg-motion --standalone
-cd my-svg-motion
-corepack enable
 pnpm install
+cp .env.example .env
+# .env.example enables demo mode, so there is no login wall.
 pnpm dev
 ```
+
+Open the URL printed by Vite (default `http://localhost:8082`); `/` goes
+straight to the project launcher. If the agent needs a model that is not
+already available, connect an AI provider in Settings → Agent.
+
+## Production
+
+Production needs a persistent Postgres database and auth secrets:
+
+```bash
+DATABASE_URL=postgres://...
+BETTER_AUTH_SECRET=<output of: openssl rand -hex 32>
+# Do not set AUTH_DISABLED in production.
+```
+
+`netlify.toml` maps `NETLIFY_DATABASE_URL` to `DATABASE_URL` and runs
+migrations on production deploys. Then run `pnpm build` and `pnpm start`, or
+deploy with Netlify.
 
 ## Quick Start
 

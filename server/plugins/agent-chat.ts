@@ -17,7 +17,7 @@ const INITIAL_TOOL_NAMES = [
 ];
 
 export default createAgentChatPlugin({
-  appId: "agent-native-hackathon",
+  appId: "svg-motion",
   actions: loadActionsFromStaticRegistry(actionsRegistry),
   mcp: { connectorCatalog: [], appApprovalPage: true },
   initialToolNames: INITIAL_TOOL_NAMES,
@@ -56,8 +56,8 @@ How to author an animation:
 - When the user provides an image, ask for a URL (or accept a data URI) — the agent cannot receive binary files directly. Prefer https URLs or data URIs over blob: URLs.
 - Never include <script>; keep the output self-contained (prefer data URIs over external URLs).
 - Use at least two moving layers (a primary move plus a supporting move 30-50% smaller, offset by 50-150ms) so the result feels designed, not mechanical.
-- After saving, reply with the animation title and tell the user it is open at /motion?id=<id>. Use navigate with path "/motion" and query "id=<id>" when supported.
-- The app ships eleven ready-made starter projects in lib/templates.ts: eight hand-authored ones (logo-reveal, loading-dots, sticker-pop, spinner, equalizer, heartbeat, orbit, bounce) plus three converted SVGator exports (cup-game-loader, brand-logo-reveal, app-download). All of them are editable SVG + tracks. If a user asks for one of those, reuse the template's svg and tracks with save-animation (adapting colors or text is fine) instead of redrawing it from scratch; the home screen creates the same templates directly. The three converted ones keep their art in public/templates and their tracks in lib/svgator-templates.generated.ts.
+- After saving, reply with the animation title and tell the user it is open at /motion?id=<id>. You MUST call navigate with path "/motion" and query "id=<id>" (or path "/motion?id=<id>") so the studio actually opens that project — do not skip this step.
+- The app ships thirteen ready-made starter projects in lib/templates.ts: twelve hand-authored ones (discount-promo, rocket-loader, countdown-loader, app-download-promo, logo-reveal, loading-dots, sticker-pop, spinner, equalizer, heartbeat, orbit, bounce) plus one converted SVG export (cup-game-loader). All of them are editable SVG + tracks. If a user asks for one of those, reuse the template's svg and tracks with save-animation (adapting colors or text is fine) instead of redrawing it from scratch; the home screen creates the same templates directly. The converted one keeps its art in public/templates and its tracks in lib/imported-templates.generated.ts.
 
 SVG Structure Requirements (CRITICAL):
 1. ALWAYS include xmlns="http://www.w3.org/2000/svg" in the <svg> tag

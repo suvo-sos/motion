@@ -1,12 +1,12 @@
 {
-  "name": "motion-studio",
+  "name": "svg-motion",
   "displayName": "SVG MOTION",
   "private": true,
-  "description": "Agent-native SVG animation studio.",
+  "description": "SVG MOTION — agent-native SVG animation studio.",
   "type": "module",
   "scripts": {
     "migrate:production": "tsx scripts/migrate-production.ts",
-    "dev": "agent-native dev --open",
+    "dev": "AUTH_DISABLED=true agent-native dev --open",
     "build": "agent-native build",
     "start": "agent-native start",
     "typecheck": "agent-native typecheck",

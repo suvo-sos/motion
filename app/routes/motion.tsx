@@ -45,11 +45,15 @@ import {
   IconFrame,
   IconHandStop,
   IconHandGrab,
+  IconHelpCircle,
   IconLetterT,
   IconLinkFilled,
   IconLockFilled,
   IconLockOpen,
   IconLine,
+  IconMagnet,
+  IconMagnetFilled,
+  IconMaximize,
   IconOvalFilled,
   IconPencilFilled,
   IconPhotoFilled,
@@ -95,6 +99,7 @@ import {
 import {
   askAgentAboutColor,
   askAgentAboutElement,
+  askAgentAboutElements,
 } from "../lib/agent-element-context";
 import { ColorPicker } from "@/components/ui/color-picker";
 import { Button } from "@/components/ui/button";
@@ -233,6 +238,25 @@ function cubicBezierForEase(ease?: string): [number, number, number, number] {
 
 function formatCubicBezier(c: [number, number, number, number]): string {
   return `cubic-bezier(${c.map((n) => Math.round(n * 100) / 100).join(",")})`;
+}
+
+const FPS_OPTIONS = [24, 25, 30, 60] as const;
+const DEFAULT_FPS = 30;
+const FPS_STORAGE_KEY = "motion-studio-fps";
+const TIMELINE_SNAP_STORAGE_KEY = "motion-studio-timeline-snap";
+/** Smallest timeline window, as a fraction of the whole clip (0.5%). */
+const MIN_TIMELINE_SPAN = 0.005;
+
+/** Timeline readout: total seconds plus milliseconds (e.g. 80.123s). */
+function formatSecondsMs(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "0.000s";
+  return `${Math.max(0, seconds).toFixed(3)}s`;
+}
+
+/** One frame expressed in the timeline's normalized 0..1 time. */
+function frameStepNormalized(durationMs: number, fps: number): number {
+  const frames = Math.max(1, Math.round((durationMs / 1000) * fps));
+  return 1 / frames;
 }
 
 const FONT_WEIGHT_OPTIONS = [
@@ -553,22 +577,6 @@ export default function MotionRoute() {
     } as any,
   );
   const animation = (detail.data as any)?.animation as MotionAnimation | null;
-
-  // Debug logging for animations
-  useEffect(() => {
-    if (animation) {
-      console.log('🎨 Animation loaded:', {
-        id: animation.id,
-        title: animation.title,
-        svgLength: animation.svg?.length || 0,
-        svgPreview: animation.svg?.substring(0, 200) || '(empty)',
-        hasScript: animation.svg?.includes('<script') || false,
-        hasViewBox: animation.svg?.includes('viewBox') || false,
-        hasSvgTag: animation.svg?.includes('<svg') || false,
-        tracksCount: animation.tracks?.length || 0,
-      });
-    }
-  }, [animation?.id, animation?.updatedAt]);
 
   // Optimistic SVG: static property edits update the artboard immediately while
   // the debounced save travels to the server.
@@ -1495,6 +1503,19 @@ function parseElementTree(svg: string): TreeNode | null {
   }
 }
 
+/** Map every id-bearing node in a parsed tree, so a multi-selection of ids
+ * can be resolved back to the tag/path/label the agent context needs. */
+function collectTreeNodesById(root: TreeNode | null): Map<string, TreeNode> {
+  const byId = new Map<string, TreeNode>();
+  if (!root) return byId;
+  const walk = (node: TreeNode) => {
+    if (node.id) byId.set(node.id, node);
+    node.children.forEach(walk);
+  };
+  walk(root);
+  return byId;
+}
+
 function getElementByPath(doc: Document, path: string): Element | null {
   if (!path) return doc.documentElement;
   const parts = path.split("/").map(Number);
@@ -2038,6 +2059,7 @@ function ElementContextMenuItems({
   isLocked,
   isHidden,
   moveTargets,
+  askAiCount = 1,
   onAskAi,
   onRename,
   onDelete,
@@ -2059,6 +2081,8 @@ function ElementContextMenuItems({
   isLocked: boolean;
   isHidden: boolean;
   moveTargets: MoveTarget[];
+  /** How many selected elements "Ask AI" will tag (1 = just this one). */
+  askAiCount?: number | undefined;
   onAskAi: (node: TreeNode) => void;
   onRename: (node: TreeNode) => void;
   onDelete: (node: TreeNode) => void;
@@ -2087,9 +2111,13 @@ function ElementContextMenuItems({
           >
             <span className="flex items-center gap-2">
               <IconSparklesFilled className="size-3.5 text-[#2391FF]" />
-              <span>Ask AI</span>
+              <span>
+                Ask AI{askAiCount > 1 ? ` (${askAiCount})` : ""}
+              </span>
             </span>
-            <span className="text-[10px] text-muted-foreground">tag element</span>
+            <span className="text-[10px] text-muted-foreground">
+              {askAiCount > 1 ? `${askAiCount} elements` : "tag element"}
+            </span>
           </ContextMenuPrimitive.Item>
 
           <div className="my-1 h-px bg-border" />
@@ -2306,6 +2334,7 @@ function ElementRow({
   isHidden,
   hasTracks,
   imageSrc,
+  askAiCount,
   onToggleCollapse,
   onSelect,
   onSelectNode,
@@ -2338,6 +2367,7 @@ function ElementRow({
   isHidden: boolean;
   hasTracks: boolean;
   imageSrc?: string | undefined;
+  askAiCount?: number | undefined;
   onToggleCollapse: (key: string) => void;
   onSelect: (id: string | null, additive: boolean) => void;
   /**
@@ -2531,6 +2561,7 @@ function ElementRow({
             isLocked={isLocked}
             isHidden={isHidden}
             moveTargets={moveTargets}
+            askAiCount={askAiCount}
             onAskAi={onAskAi}
             onRename={onRename}
             onDelete={onDelete}
@@ -2570,6 +2601,7 @@ const MemoElementRow = memo(ElementRow, (prev, next) =>
   prev.isHidden === next.isHidden &&
   prev.hasTracks === next.hasTracks &&
   prev.imageSrc === next.imageSrc &&
+  prev.askAiCount === next.askAiCount &&
   prev.moveTargets.length === next.moveTargets.length &&
   prev.moveTargets.every((t, i) => t.path === next.moveTargets[i]?.path) &&
   prev.onToggleCollapse === next.onToggleCollapse &&
@@ -4661,10 +4693,10 @@ function ElementsRail({
   const tree = useMemo(() => (animation ? parseElementTree(animation.svg) : null), [animation?.svg]);
 
   // Read-only list of defs (gradients, patterns, filters, markers, masks,
-  // clips) for the Definitions section below the tree. These rows are
-  // deliberately NOT selectable: defs are invisible, and selecting them
-  // would break canvas selection and measurement, which was the reason
-  // they were hidden from the tree in the first place.
+  // clips) for the Definitions help popover. These rows are deliberately
+  // NOT selectable: defs are invisible, and selecting them would break
+  // canvas selection and measurement, which was the reason they were
+  // hidden from the tree in the first place.
   const defsList = useMemo(() => {
     if (!animation?.svg) return [] as Array<{ id: string; tag: string }>;
     try {
@@ -4679,6 +4711,7 @@ function ElementsRail({
 
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  const [defsHelpOpen, setDefsHelpOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>(
     selectedElementId ? [selectedElementId] : [],
   );
@@ -4697,14 +4730,12 @@ function ElementsRail({
 
   const handleSelectNode = useCallback(
     (id: string | null, additive: boolean) => {
-      console.log('handleSelectNode called:', { id, additive, selectedIds });
       if (!id) {
         setSelectedIds([]);
         onSelectElement(null);
         return;
       }
       if (!additive) {
-        console.log('Setting single selection:', id);
         setSelectedIds([id]);
         onSelectElement(id);
         return;
@@ -4712,7 +4743,6 @@ function ElementsRail({
       const next = selectedIds.includes(id)
         ? selectedIds.filter((value) => value !== id)
         : [...selectedIds, id];
-      console.log('Multi-select, new selection:', next);
       setSelectedIds(next);
       onSelectElement(
         next.includes(id) ? id : (next[next.length - 1] ?? null),
@@ -4735,17 +4765,49 @@ function ElementsRail({
    * carries the element's markup and its existing tracks, so the user only has
    * to type what they want changed. Selecting the element first also points the
    * agent's screen context at the same shape.
+   *
+   * When the right-clicked element is part of a multi-selection, every
+   * selected id is tagged, with the right-clicked one first, so one prompt can
+   * refer to all of them at once.
    */
   const handleAskAi = (node: TreeNode) => {
     if (!animation) return;
-    if (node.id) handleSelectNode(node.id, false);
-    askAgentAboutElement({
-      element: { tag: node.tag, id: node.id, path: node.path },
-      label: getElementLabel(node),
+    const context = {
       projectId: animation.id,
       projectTitle: title || animation.title,
       svg: animation.svg,
       tracks: animation.tracks,
+    };
+    const isMulti =
+      Boolean(node.id) &&
+      selectedIds.length > 1 &&
+      selectedIds.includes(node.id);
+
+    if (!isMulti) {
+      if (node.id) handleSelectNode(node.id, false);
+      askAgentAboutElement({
+        element: { tag: node.tag, id: node.id, path: node.path },
+        label: getElementLabel(node),
+        ...context,
+      });
+      return;
+    }
+
+    // Set the primary selection to the right-clicked element without
+    // collapsing the multi-selection (the sync effect keeps it as long as
+    // the primary id is a member).
+    onSelectElement(node.id);
+    const byId = collectTreeNodesById(tree);
+    const others = selectedIds
+      .filter((id) => id !== node.id)
+      .map((id) => byId.get(id))
+      .filter((item): item is TreeNode => Boolean(item));
+    askAgentAboutElements({
+      elements: [node, ...others].map((item) => ({
+        element: { tag: item.tag, id: item.id, path: item.path },
+        label: getElementLabel(item),
+      })),
+      ...context,
     });
   };
 
@@ -5545,6 +5607,9 @@ function ElementsRail({
           isHidden={isHidden}
           hasTracks={hasTracks}
           imageSrc={node.id ? imageSources.get(node.id) : undefined}
+          askAiCount={
+            isSelected && selectedIds.length > 1 ? selectedIds.length : 1
+          }
           onToggleCollapse={toggleCollapse}
           onSelect={handleSelectNode}
           onSelectNode={handleSelectTreeNode}
@@ -5912,6 +5977,50 @@ function ElementsRail({
               <span>Unlock all</span>
             </button>
           )}
+          <Popover open={defsHelpOpen} onOpenChange={setDefsHelpOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                aria-label="About definitions"
+                title="About definitions"
+              >
+                <IconHelpCircle className="size-3.5" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" sideOffset={6} className="w-[320px] p-0">
+              <div className="border-b border-border/60 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Definitions ({defsList.length}) — not selectable
+              </div>
+              {defsList.length > 0 ? (
+                <div className="max-h-56 overflow-y-auto py-1">
+                  {defsList.map((def) => (
+                    <div
+                      key={`${def.tag}-${def.id}`}
+                      className="flex items-center gap-2 px-3 py-1"
+                    >
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        {def.tag}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/80">
+                        {def.id}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="px-3 py-2 text-[11px] text-muted-foreground">
+                  No definitions in this animation.
+                </p>
+              )}
+              <p className="border-t border-border/60 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                Gradients, patterns, filters, markers, masks and clips live
+                here. They are edited from the Properties panel, not selected
+                on canvas.
+              </p>
+            </PopoverContent>
+          </Popover>
+
           <button
             onClick={allCollapsed ? expandAll : collapseAll}
             className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
@@ -5969,20 +6078,6 @@ function ElementsRail({
             No elements
           </div>
         )}
-        {defsList.length > 0 ? (
-          <div className="mt-3 border-t border-sidebar-border/40 pt-2">
-            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Definitions ({defsList.length}) — not selectable
-            </div>
-            {defsList.map((def) => (
-              <div key={def.id} className="flex items-center gap-2 px-2 py-1 text-xs text-sidebar-foreground/70">
-                <span className="rounded bg-sidebar-accent px-1.5 py-0.5 text-[10px] font-mono">{def.tag}</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{def.id}</span>
-              </div>
-            ))}
-            <p className="px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">Gradients, patterns, filters, markers, masks and clips live here. They are edited from the Properties panel, not selected on canvas.</p>
-          </div>
-        ) : null}
       </div>
       {promptDialog}
     </div>
@@ -6440,7 +6535,6 @@ function StudioTopBar({
       </div>
       <div className="flex shrink-0 items-center justify-end gap-1">
         {right}
-        <AgentColorMention hideWhenInjected />
         <div className="relative group shrink-0">
           {/* showWhenOpen: the toolkit button vanishes once the panel is
               open, which in the studio left no visible agent control at
@@ -6710,14 +6804,41 @@ function StudioWorkspace({
   };
 
   const handleCanvasAskAi = (node: TreeNode) => {
-    if (node.id) onSelectElement?.(node.id);
-    askAgentAboutElement({
-      element: { tag: node.tag, id: node.id, path: node.path },
-      label: getElementLabel(node),
+    const context = {
       projectId: animation.id,
       projectTitle: title || animation.title,
       svg: animation.svg,
       tracks: animation.tracks,
+    };
+    const isMulti =
+      Boolean(node.id) &&
+      multiSelection.length > 1 &&
+      multiSelection.includes(node.id);
+
+    if (!isMulti) {
+      if (node.id) onSelectElement?.(node.id);
+      askAgentAboutElement({
+        element: { tag: node.tag, id: node.id, path: node.path },
+        label: getElementLabel(node),
+        ...context,
+      });
+      return;
+    }
+
+    // Keep the multi-selection intact and make the right-clicked element the
+    // primary one; it leads the tag order so it gets the visible chip.
+    onSelectElement?.(node.id);
+    const byId = collectTreeNodesById(canvasTree);
+    const others = multiSelection
+      .filter((id) => id !== node.id)
+      .map((id) => byId.get(id))
+      .filter((item): item is TreeNode => Boolean(item));
+    askAgentAboutElements({
+      elements: [node, ...others].map((item) => ({
+        element: { tag: item.tag, id: item.id, path: item.path },
+        label: getElementLabel(item),
+      })),
+      ...context,
     });
   };
 
@@ -6934,7 +7055,12 @@ function StudioWorkspace({
     setCanvasMenuNode(node);
     if (node.id) {
       onSelectElement?.(node.id);
-      setMultiSelection([node.id]);
+      // Right-clicking a member of the multi-selection keeps the whole
+      // selection alive (so "Ask AI" can tag every member); right-clicking
+      // anything else, or starting fresh, selects just that element.
+      setMultiSelection((prev) =>
+        prev.includes(node.id) ? prev : [node.id],
+      );
     }
   };
 
@@ -7559,6 +7685,113 @@ function StudioWorkspace({
     publishMotionEditor({ tracks, time, duration });
   }, [tracks, time, duration]);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // The active keyframe (shown in the inspector) and the full set the user
+  // has selected with Shift/Cmd-click. Keeping both means group edits can
+  // move/delete every diamond while the inspector still edits one keyframe.
+  const [selectedKeyframes, setSelectedKeyframes] = useState<Selection[]>([]);
+  // Mirror the selection in a ref so rapid Shift-clicks always compose
+  // against the latest list, even before React has re-rendered.
+  const selectedKeyframesRef = useRef<Selection[]>([]);
+  selectedKeyframesRef.current = selectedKeyframes;
+  const [fps, setFps] = useState<number>(DEFAULT_FPS);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+
+  // Read UI-only timeline preferences after mount so SSR and the first
+  // client render agree; persist them for the next project too.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storedFps = Number(window.localStorage.getItem(FPS_STORAGE_KEY));
+    if ((FPS_OPTIONS as readonly number[]).includes(storedFps)) {
+      setFps(storedFps);
+    }
+    const storedSnap = window.localStorage.getItem(
+      TIMELINE_SNAP_STORAGE_KEY,
+    );
+    if (storedSnap === "false") setSnapEnabled(false);
+  }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(FPS_STORAGE_KEY, String(fps));
+    }
+  }, [fps]);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        TIMELINE_SNAP_STORAGE_KEY,
+        String(snapEnabled),
+      );
+    }
+  }, [snapEnabled]);
+
+  const clearKeyframeSelection = useCallback(() => {
+    selectedKeyframesRef.current = [];
+    setSelection(null);
+    setSelectedKeyframes([]);
+  }, []);
+
+  const selectKeyframe = useCallback(
+    (next: Selection | null, additive = false) => {
+      if (!next) {
+        clearKeyframeSelection();
+        return;
+      }
+      if (!additive) {
+        selectedKeyframesRef.current = [next];
+        setSelection(next);
+        setSelectedKeyframes([next]);
+        return;
+      }
+      const current = selectedKeyframesRef.current;
+      const exists = current.some(
+        (item) =>
+          item.track === next.track && item.keyframe === next.keyframe,
+      );
+      const nextList = exists
+        ? current.filter(
+            (item) =>
+              item.track !== next.track || item.keyframe !== next.keyframe,
+          )
+        : [...current, next];
+      selectedKeyframesRef.current = nextList;
+      setSelectedKeyframes(nextList);
+      setSelection(
+        exists ? (nextList[nextList.length - 1] ?? null) : next,
+      );
+    },
+    [clearKeyframeSelection],
+  );
+
+  /** Make a keyframe the inspector target without collapsing a multi-select. */
+  const activateKeyframe = useCallback((next: Selection) => {
+    setSelection(next);
+  }, []);
+
+  // Undo, the agent, or a panel edit can replace the tracks underneath the
+  // timeline. Drop any selected keyframe that no longer exists instead of
+  // letting a stale index point at a different keyframe.
+  useEffect(() => {
+    setSelectedKeyframes((prev) => {
+      const next = prev.filter((item) => {
+        const track = tracks[item.track];
+        return (
+          track &&
+          item.keyframe >= 0 &&
+          item.keyframe < track.keyframes.length
+        );
+      });
+      return next.length === prev.length ? prev : next;
+    });
+    setSelection((prev) => {
+      if (!prev) return prev;
+      const track = tracks[prev.track];
+      return track &&
+        prev.keyframe >= 0 &&
+        prev.keyframe < track.keyframes.length
+        ? prev
+        : null;
+    });
+  }, [tracks]);
+
   // Left-sidebar Keyframe tab slot for the keyframe editor: the sidebar
   // is a sibling component and the slot only exists while the Keyframe tab
   // is open, so a MutationObserver re-finds it whenever tabs switch. The
@@ -7689,11 +7922,16 @@ function StudioWorkspace({
     timeRef.current = clamped;
   };
 
-  const addKeyframe = (trackIndex: number, at: number = time, suppliedValue?: number | string) => {
+  const addKeyframe = (
+    trackIndex: number,
+    at: number = time,
+    suppliedValue?: number | string,
+  ) => {
     const track = tracks[trackIndex];
     if (!track) return;
     const t = Math.max(0, Math.min(1, at));
-    const value = suppliedValue !== undefined ? suppliedValue : sampleTrack(track, t);
+    const value =
+      suppliedValue !== undefined ? suppliedValue : sampleTrack(track, t);
     const keyframes = [
       ...track.keyframes.filter((k) => Math.abs(k.t - t) > 0.001),
       { t, v: value },
@@ -7703,7 +7941,7 @@ function StudioWorkspace({
     );
     setTime(t);
     timeRef.current = t;
-    setSelection({
+    selectKeyframe({
       track: trackIndex,
       keyframe: Math.max(
         0,
@@ -7720,24 +7958,74 @@ function StudioWorkspace({
           : tr,
       ),
     );
+    setSelectedKeyframes((prev) =>
+      prev.filter(
+        (item) =>
+          item.track !== trackIndex || item.keyframe !== kfIndex,
+      ),
+    );
+    setSelection((prev) =>
+      prev?.track === trackIndex && prev.keyframe === kfIndex
+        ? null
+        : prev,
+    );
   };
 
-  const moveKeyframe = (trackIndex: number, kfIndex: number, t: number) => {
-    const clamped = Math.max(0, Math.min(1, t));
+  const keyframeTargets = useCallback(() => {
+    const current = selectedKeyframesRef.current;
+    if (current.length > 0) return current;
+    return selection ? [selection] : [];
+  }, [selection]);
+
+  const removeSelectedKeyframes = useCallback(() => {
+    const targets = keyframeTargets();
+    if (targets.length === 0) return;
     setTracks((prev) =>
       prev.map((tr, i) => {
-        if (i !== trackIndex) return tr;
+        const indices = new Set(
+          targets
+            .filter((item) => item.track === i)
+            .map((item) => item.keyframe),
+        );
+        if (indices.size === 0) return tr;
         return {
           ...tr,
-          keyframes: tr.keyframes.map((k, j) =>
-            j === kfIndex ? { ...k, t: clamped } : k,
-          ),
+          keyframes: tr.keyframes.filter((_, j) => !indices.has(j)),
         };
       }),
     );
-    setTime(clamped);
-    timeRef.current = clamped;
-  };
+    clearKeyframeSelection();
+  }, [clearKeyframeSelection, keyframeTargets]);
+
+  /**
+   * Move a set of keyframes by absolute times. The timeline sends every
+   * selected diamond on each pointer move; the tracks are not re-sorted
+   * during the drag, so marker/keyframe indices stay stable. The engine
+   * samples keyframes by time, not array order.
+   */
+  const moveKeyframes = useCallback(
+    (moves: Array<{ track: number; keyframe: number; t: number }>) => {
+      if (moves.length === 0) return;
+      setTracks((prev) => {
+        let changed = false;
+        const next = prev.map((tr) => ({
+          ...tr,
+          keyframes: [...tr.keyframes],
+        }));
+        for (const move of moves) {
+          const track = next[move.track];
+          const keyframe = track?.keyframes[move.keyframe];
+          if (!track || !keyframe) continue;
+          const t = Math.max(0, Math.min(1, move.t));
+          if (t === keyframe.t) continue;
+          track.keyframes[move.keyframe] = { ...keyframe, t };
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    },
+    [],
+  );
 
   const updateKeyframe = (
     trackIndex: number,
@@ -7761,40 +8049,111 @@ function StudioWorkspace({
     }
   };
 
-  // Pro keyframe workflow: copy/paste and prev/next stepping. The clipboard
-  // is internal (not the system clipboard), so pasting a keyframe never
-  // triggers the canvas SVG/image paste path. Paste targets the currently
-  // selected track at the playhead, carrying the copied value and easing.
-  const copiedKeyframeRef = useRef<{ v: number | string; ease?: string } | null>(null);
+  // Pro keyframe workflow: multi-keyframe copy/paste and prev/next stepping.
+  // The clipboard is internal (not the system clipboard), so pasting a
+  // keyframe never triggers the canvas SVG/image paste path. Relative timing
+  // between copied keyframes is preserved, and each one returns to its own
+  // target/property track when that track still exists.
+  interface CopiedKeyframe {
+    target: string;
+    property: Property;
+    dt: number;
+    v: number | string;
+    ease?: string;
+  }
+  const copiedKeyframesRef = useRef<{
+    anchorT: number;
+    items: CopiedKeyframe[];
+  } | null>(null);
   const [hasCopiedKeyframe, setHasCopiedKeyframe] = useState(false);
-  const copyKeyframe = () => {
-    if (!selection) return;
-    const kf = tracksRef.current[selection.track]?.keyframes[selection.keyframe];
-    if (!kf) return;
-    copiedKeyframeRef.current = { v: kf.v, ...(kf.ease ? { ease: kf.ease } : {}) };
-    setHasCopiedKeyframe(true);
-    toast.success("Keyframe copied");
-  };
-  const pasteKeyframe = () => {
-    if (!selection || !copiedKeyframeRef.current) return;
-    const copied = copiedKeyframeRef.current;
-    const t = Math.max(0, Math.min(1, timeRef.current));
-    const track = tracksRef.current[selection.track];
-    if (!track) return;
-    const keyframes = [
-      ...track.keyframes.filter((k) => Math.abs(k.t - t) > 0.001),
-      { t, v: copied.v, ...(copied.ease ? { ease: copied.ease } : {}) },
-    ].sort((a, b) => a.t - b.t);
-    setTracks((prev) =>
-      prev.map((tr, i) => (i === selection.track ? { ...tr, keyframes } : tr)),
+
+  const copyKeyframe = useCallback(() => {
+    const targets = keyframeTargets();
+    if (targets.length === 0) return;
+    const items: Array<CopiedKeyframe & { t: number }> = [];
+    for (const target of targets) {
+      const track = tracksRef.current[target.track];
+      const keyframe = track?.keyframes[target.keyframe];
+      if (!track || !keyframe) continue;
+      items.push({
+        target: track.target,
+        property: track.property,
+        t: keyframe.t,
+        dt: 0,
+        v: keyframe.v,
+        ...(keyframe.ease ? { ease: keyframe.ease } : {}),
+      });
+    }
+    if (items.length === 0) return;
+    const anchorT = items.reduce(
+      (min, item) => Math.min(min, item.t),
+      1,
     );
-    setSelection({
-      track: selection.track,
-      keyframe: Math.max(0, keyframes.findIndex((k) => Math.abs(k.t - t) <= 0.0001)),
-    });
-    setTime(t);
-    timeRef.current = t;
-  };
+    copiedKeyframesRef.current = {
+      anchorT,
+      items: items.map(({ t, ...item }) => ({
+        ...item,
+        dt: t - anchorT,
+      })),
+    };
+    setHasCopiedKeyframe(true);
+    toast.success(
+      items.length === 1
+        ? "Keyframe copied"
+        : `${items.length} keyframes copied`,
+    );
+  }, [keyframeTargets]);
+
+  const pasteKeyframe = useCallback(() => {
+    const clipboard = copiedKeyframesRef.current;
+    if (!clipboard || clipboard.items.length === 0) return;
+    const base = Math.max(0, Math.min(1, timeRef.current));
+    const updates = new Map<number, Keyframe[]>();
+    for (const item of clipboard.items) {
+      let trackIndex = tracksRef.current.findIndex(
+        (track) =>
+          track.target === item.target && track.property === item.property,
+      );
+      if (trackIndex === -1 && clipboard.items.length === 1 && selection) {
+        trackIndex = selection.track;
+      }
+      if (trackIndex === -1) continue;
+      const track = tracksRef.current[trackIndex];
+      if (!track) continue;
+      const t = Math.max(0, Math.min(1, base + item.dt));
+      const list = updates.get(trackIndex) ?? [...track.keyframes];
+      const next = list.filter((keyframe) => Math.abs(keyframe.t - t) > 0.001);
+      next.push({
+        t,
+        v: item.v,
+        ...(item.ease ? { ease: item.ease } : {}),
+      });
+      next.sort((a, b) => a.t - b.t);
+      updates.set(trackIndex, next);
+    }
+    if (updates.size === 0) return;
+    setTracks((prev) =>
+      prev.map((track, i) =>
+        updates.has(i)
+          ? { ...track, keyframes: updates.get(i)! }
+          : track,
+      ),
+    );
+    if (selection) {
+      const activeTrack = updates.get(selection.track);
+      if (activeTrack) {
+        const index = activeTrack.findIndex(
+          (keyframe) => Math.abs(keyframe.t - base) <= 0.001,
+        );
+        if (index >= 0) {
+          selectKeyframe({ track: selection.track, keyframe: index });
+        }
+      }
+    }
+    setTime(base);
+    timeRef.current = base;
+  }, [selectKeyframe, selection]);
+
   const stepKeyframe = (dir: -1 | 1) => {
     if (!selection) return;
     const track = tracksRef.current[selection.track];
@@ -7807,7 +8166,7 @@ function StudioWorkspace({
     const pos = order.findIndex((o) => o.i === selection.keyframe);
     const next = order[pos + dir];
     if (pos === -1 || !next) return;
-    setSelection({ track: selection.track, keyframe: next.i });
+    selectKeyframe({ track: selection.track, keyframe: next.i });
     scrub(next.t);
   };
 
@@ -8494,7 +8853,7 @@ function StudioWorkspace({
         setPlaying(false);
       } else {
         onSelectElement?.(null);
-        setSelection(null);
+        clearKeyframeSelection();
         setGuides({ x: null, y: null });
       }
       return;
@@ -8540,7 +8899,7 @@ function StudioWorkspace({
     if (!target || !target.id) {
       onSelectElement?.(null);
       setMultiSelection([]);
-      setSelection(null);
+      clearKeyframeSelection();
       setGuides({ x: null, y: null });
       return;
     }
@@ -8817,7 +9176,7 @@ function StudioWorkspace({
       return;
     }
     onSelectElement?.(null);
-    setSelection(null);
+    clearKeyframeSelection();
     setGuides({ x: null, y: null });
   };
 
@@ -8884,7 +9243,11 @@ function StudioWorkspace({
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.tagName === "SELECT" ||
-          target.isContentEditable)
+          target.isContentEditable ||
+          // Radix selects (fps and property pickers) own their arrow keys.
+          target.closest?.(
+            '[role="combobox"], [role="listbox"], [role="option"]',
+          ))
       ) {
         return;
       }
@@ -8920,12 +9283,21 @@ function StudioWorkspace({
         flipCanvasSelection("y");
         return;
       }
-      if (e.code === "KeyC" && (e.metaKey || e.ctrlKey) && selection) {
+      if (
+        e.code === "KeyC" &&
+        (e.metaKey || e.ctrlKey) &&
+        (selection || selectedKeyframes.length > 0)
+      ) {
         e.preventDefault();
         copyKeyframe();
         return;
       }
-      if (e.code === "KeyV" && (e.metaKey || e.ctrlKey) && !e.shiftKey && copiedKeyframeRef.current) {
+      if (
+        e.code === "KeyV" &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        copiedKeyframesRef.current
+      ) {
         // preventDefault also stops the browser paste event, so the canvas
         // SVG/image paste path does not fire on top of the keyframe paste.
         e.preventDefault();
@@ -9009,17 +9381,29 @@ function StudioWorkspace({
         e.preventDefault();
         if (!e.repeat) spaceDownTimeRef.current = performance.now();
         setIsSpacePressed(true);
-      } else if (e.key === "ArrowLeft") {
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        scrub(timeRef.current - 0.02);
-      } else if (e.key === "ArrowRight") {
+        const direction = e.key === "ArrowLeft" ? -1 : 1;
+        // One frame per press (Shift = ten), so the playhead lands on the
+        // same timecode grid the timeline snaps keyframes to.
+        const step =
+          frameStepNormalized(duration, fps) * (e.shiftKey ? 10 : 1);
+        scrub(timeRef.current + direction * step);
+      } else if (e.key === "Home") {
         e.preventDefault();
-        scrub(timeRef.current + 0.02);
+        scrub(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        scrub(1);
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (selection) {
+        if (selection || selectedKeyframes.length > 0) {
           e.preventDefault();
-          removeKeyframe(selection.track, selection.keyframe);
-          setSelection(null);
+          removeSelectedKeyframes();
+        }
+      } else if (e.key === "Escape") {
+        if (selection || selectedKeyframes.length > 0) {
+          e.preventDefault();
+          clearKeyframeSelection();
         }
       }
     };
@@ -9053,7 +9437,25 @@ function StudioWorkspace({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [selection, loop, playing, undo, redo, groupCanvasSelection, ungroupCanvasSelection, flipCanvasSelection, centreCanvasSelection, fitView]);
+  }, [
+    selection,
+    selectedKeyframes,
+    fps,
+    duration,
+    loop,
+    playing,
+    undo,
+    redo,
+    groupCanvasSelection,
+    ungroupCanvasSelection,
+    flipCanvasSelection,
+    centreCanvasSelection,
+    fitView,
+    copyKeyframe,
+    pasteKeyframe,
+    removeSelectedKeyframes,
+    clearKeyframeSelection,
+  ]);
 
   const handleExport = (format: ExportFormat, options?: ExportRenderOptions) => {
     const result = runExport(
@@ -9402,7 +9804,7 @@ function StudioWorkspace({
               onClick={() => setExportDialogOpen(true)}
             >
               <IconDownloadFilled className="size-4" />
-              Export SVG
+              Export
             </Button>
           </>
         }
@@ -9519,6 +9921,13 @@ function StudioWorkspace({
                       node={canvasMenuNode}
                       isLocked={Boolean(canvasMenuNode.id && lockedIds?.has(canvasMenuNode.id))}
                       isHidden={Boolean(canvasMenuNode.id && hiddenIds?.has(canvasMenuNode.id))}
+                      askAiCount={
+                        canvasMenuNode.id &&
+                        multiSelection.length > 1 &&
+                        multiSelection.includes(canvasMenuNode.id)
+                          ? multiSelection.length
+                          : 1
+                      }
                       moveTargets={
                         canvasMenuNode.path
                           ? canvasMoveTargets.filter(
@@ -9957,6 +10366,8 @@ function StudioWorkspace({
                 track={selected.track}
                 keyframe={selected.keyframe}
                 time={time}
+                duration={duration}
+                fps={fps}
                 onChange={(patch) =>
                   updateKeyframe(
                     selected.selection.track,
@@ -9975,14 +10386,9 @@ function StudioWorkspace({
                 onCopy={copyKeyframe}
                 onPaste={pasteKeyframe}
                 canPaste={hasCopiedKeyframe}
-                onDelete={() => {
-                  removeKeyframe(
-                    selected.selection.track,
-                    selected.selection.keyframe,
-                  );
-                  setSelection(null);
-                }}
-                onClose={() => setSelection(null)}
+                selectedCount={selectedKeyframes.length}
+                onDelete={removeSelectedKeyframes}
+                onClose={clearKeyframeSelection}
               />,
               keyframeSlot,
             )
@@ -10026,21 +10432,27 @@ function StudioWorkspace({
         tracks={tracks}
         time={time}
         selection={selection}
+        selectedKeyframes={selectedKeyframes}
         selectedElementId={selectedElementId}
         duration={duration}
         playing={playing}
         loop={loop}
+        fps={fps}
+        snapEnabled={snapEnabled}
         height={timelineHeight}
         sidebarWidth={sidebarWidth}
         onHeightChange={onTimelineHeightChange}
         onTogglePlay={togglePlay}
         onToggleLoop={() => setLoop((v) => !v)}
         onDurationChange={setDuration}
+        onFpsChange={setFps}
+        onSnapChange={setSnapEnabled}
         onScrub={scrub}
-        onSelect={setSelection}
+        onSelectKeyframe={selectKeyframe}
+        onActivateKeyframe={activateKeyframe}
         onAdd={addKeyframe}
         onRemove={removeKeyframe}
-        onMove={moveKeyframe}
+        onMoveMany={moveKeyframes}
       />
       <SvgExportDialog
         open={exportDialogOpen}
@@ -10295,6 +10707,8 @@ function KeyframeInspector({
   track,
   keyframe,
   time,
+  duration,
+  fps,
   onChange,
   onTrackKeyframeChange,
   onTrackKeyframeAdd,
@@ -10303,6 +10717,7 @@ function KeyframeInspector({
   onCopy,
   onPaste,
   canPaste = false,
+  selectedCount = 0,
   onDelete,
   onClose,
   docked = false,
@@ -10310,6 +10725,9 @@ function KeyframeInspector({
   track: Track;
   keyframe: { t: number; v: number | string; ease?: string };
   time?: number;
+  /** Clip length + frame rate, used for the timecode readout. */
+  duration: number;
+  fps: number;
   onChange: (patch: { t?: number; v?: number | string; ease?: string }) => void;
   onTrackKeyframeChange?: (kfIndex: number, patch: { t?: number; v?: number; ease?: string }) => void;
   onTrackKeyframeAdd?: (t: number, v: number) => void;
@@ -10318,6 +10736,8 @@ function KeyframeInspector({
   onCopy?: () => void;
   onPaste?: () => void;
   canPaste?: boolean;
+  /** How many diamonds are selected; the delete button removes them all. */
+  selectedCount?: number;
   onDelete: () => void;
   onClose: () => void;
   /** Docked in the left sidebar (via the portal slot) instead of floating
@@ -10380,22 +10800,33 @@ function KeyframeInspector({
 
       <div className="space-y-3 p-3">
         <label className="block">
-          <span className="mb-1 block text-[10px] font-medium text-muted-foreground">
-            Time
+          <span className="mb-1 flex items-baseline justify-between text-[10px] font-medium text-muted-foreground">
+            <span>Time</span>
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground/80">
+              {formatSecondsMs(keyframe.t * (duration / 1000))}
+            </span>
           </span>
           <div className="flex items-center gap-2">
             <Slider
-              value={[Math.round(keyframe.t * 1000)]}
+              value={[
+                Math.round(
+                  keyframe.t *
+                    Math.max(1, Math.round((duration / 1000) * fps)),
+                ),
+              ]}
               min={0}
-              max={1000}
+              max={Math.max(1, Math.round((duration / 1000) * fps))}
               step={1}
-              onValueChange={([next]) => onChange({ t: (next ?? 0) / 1000 })}
+              onValueChange={([next]) =>
+                onChange({
+                  t:
+                    (next ?? 0) /
+                    Math.max(1, Math.round((duration / 1000) * fps)),
+                })
+              }
               thumbAriaLabel="Keyframe time"
               className="min-w-0 flex-1"
             />
-            <span className="w-9 text-right text-[11px] tabular-nums text-muted-foreground">
-              {Math.round(keyframe.t * 100)}%
-            </span>
           </div>
         </label>
 
@@ -10510,10 +10941,10 @@ function KeyframeInspector({
           <button
             type="button"
             onClick={onCopy}
-            title="Copy keyframe (Cmd/Ctrl+C)"
+            title="Copy selected keyframes (Cmd/Ctrl+C)"
             className="flex items-center justify-center rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           >
-            Copy keyframe
+            {selectedCount > 1 ? `Copy ${selectedCount}` : "Copy keyframe"}
           </button>
           <button
             type="button"
@@ -10530,7 +10961,9 @@ function KeyframeInspector({
           className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border py-1.5 text-[11px] text-muted-foreground transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
         >
           <IconTrashFilled className="size-3" />
-          Delete keyframe
+          {selectedCount > 1
+            ? `Delete ${selectedCount} keyframes`
+            : "Delete keyframe"}
         </button>
       </div>
     </div>
@@ -10541,29 +10974,38 @@ function Timeline({
   tracks,
   time,
   selection,
+  selectedKeyframes,
   selectedElementId,
   duration,
   playing,
   loop,
+  fps,
+  snapEnabled,
   height,
   sidebarWidth = 256,
   onHeightChange,
   onTogglePlay,
   onToggleLoop,
   onDurationChange,
+  onFpsChange,
+  onSnapChange,
   onScrub,
-  onSelect,
+  onSelectKeyframe,
+  onActivateKeyframe,
   onAdd,
   onRemove,
-  onMove,
+  onMoveMany,
 }: {
   tracks: Track[];
   time: number;
   selection: Selection | null;
+  selectedKeyframes: Selection[];
   selectedElementId?: string | null | undefined;
   duration: number;
   playing: boolean;
   loop: boolean;
+  fps: number;
+  snapEnabled: boolean;
   height: number;
   /** Width of the left sidebar. The timeline stretches left under it by
       this amount, so it always spans the full window width no matter how
@@ -10573,46 +11015,389 @@ function Timeline({
   onTogglePlay: () => void;
   onToggleLoop: () => void;
   onDurationChange: (duration: number) => void;
+  onFpsChange: (fps: number) => void;
+  onSnapChange: (enabled: boolean) => void;
   onScrub: (t: number) => void;
-  onSelect: (next: Selection | null) => void;
+  onSelectKeyframe: (next: Selection | null, additive?: boolean) => void;
+  onActivateKeyframe: (next: Selection) => void;
   onAdd: (trackIndex: number, t?: number) => void;
   onRemove: (trackIndex: number, kfIndex: number) => void;
-  onMove: (trackIndex: number, kfIndex: number, t: number) => void;
+  onMoveMany: (
+    moves: Array<{ track: number; keyframe: number; t: number }>,
+  ) => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const rulerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
-    track: number;
-    keyframe: number;
+    anchor: Selection;
+    startClientX: number;
     rect: DOMRect;
+    moved: boolean;
+    /** Last time of the grabbed keyframe, so the playhead can follow live. */
+    lastT: number | null;
+    items: Array<Selection & { startT: number }>;
   } | null>(null);
   const scrubRef = useRef<DOMRect | null>(null);
-  const handlersRef = useRef({ onMove, onScrub });
+  const panRef = useRef<{
+    startX: number;
+    startView: { start: number; end: number };
+  } | null>(null);
+  const handlersRef = useRef({ onMoveMany, onScrub });
   useEffect(() => {
-    handlersRef.current = { onMove, onScrub };
-  }, [onMove, onScrub]);
+    handlersRef.current = { onMoveMany, onScrub };
+  }, [onMoveMany, onScrub]);
+
+  // The visible slice of the clip. start/end are normalized 0..1; the
+  // default is the whole clip. Zooming narrows the window instead of
+  // changing the underlying time data, so keyframes never move when you
+  // zoom.
+  const [view, setView] = useState({ start: 0, end: 1 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [snapGuide, setSnapGuide] = useState<{
+    t: number;
+    kind: "keyframe" | "edge";
+  } | null>(null);
 
   const [expandedElements, setExpandedElements] = useState<Set<string>>(
     () => new Set(selectedElementId ? [selectedElementId] : []),
   );
 
+  const safeDuration =
+    Number.isFinite(duration) && duration > 0 ? duration : 1000;
+  const durationSeconds = safeDuration / 1000;
+  const frameCount = Math.max(1, Math.round(durationSeconds * fps));
+  // Never zoom past two visible frames: keyframes snap to frames, so
+  // anything tighter only shows sub-frame tick labels.
+  const minSpan = Math.max(MIN_TIMELINE_SPAN, 2 / frameCount);
+  const span = Math.max(minSpan, view.end - view.start);
+  const visibleStartSec = view.start * durationSeconds;
+  const visibleEndSec = view.end * durationSeconds;
+  const visibleSeconds = visibleEndSec - visibleStartSec;
+
+  const ratioToTime = useCallback((ratio: number) => {
+    const { start, end } = viewRef.current;
+    return Math.max(0, Math.min(1, start + ratio * (end - start)));
+  }, []);
+  const timeToPercent = useCallback((t: number) => {
+    const { start, end } = viewRef.current;
+    const currentSpan = end - start;
+    return currentSpan > 0 ? ((t - start) / currentSpan) * 100 : 0;
+  }, []);
+
+  const isTimeVisible = (t: number) =>
+    t >= view.start - 1e-6 && t <= view.end + 1e-6;
+
+  // A shorter clip or higher fps can raise the minimum zoom. Re-clamp an
+  // existing window so the ruler and zoom readout never disagree.
   useEffect(() => {
-    const move = (e: PointerEvent) => {
-      if (dragRef.current) {
-        const { rect, track, keyframe } = dragRef.current;
-        handlersRef.current.onMove(
-          track,
-          keyframe,
-          (e.clientX - rect.left) / rect.width,
+    setView((prev) => {
+      const currentSpan = prev.end - prev.start;
+      if (currentSpan >= minSpan) return prev;
+      const mid = (prev.start + prev.end) / 2;
+      let start = mid - minSpan / 2;
+      let end = mid + minSpan / 2;
+      if (start < 0) {
+        start = 0;
+        end = minSpan;
+      }
+      if (end > 1) {
+        end = 1;
+        start = 1 - minSpan;
+      }
+      return { start, end };
+    });
+  }, [minSpan]);
+
+  const playheadPercent = timeToPercent(time);
+  const playheadVisible =
+    playheadPercent >= -0.5 && playheadPercent <= 100.5;
+  const zoomAnchor = playheadVisible
+    ? time
+    : (view.start + view.end) / 2;
+  const playheadAnchor =
+    playheadPercent <= 0.5
+      ? "translate-x-0"
+      : playheadPercent >= 99.5
+        ? "-translate-x-full"
+        : "-translate-x-1/2";
+  const safePercent = (t: number) =>
+    Math.max(0, Math.min(100, timeToPercent(t)));
+
+  const applyView = useCallback((nextStart: number, nextEnd: number) => {
+    let start = nextStart;
+    let end = nextEnd;
+    let nextSpan = end - start;
+    if (!Number.isFinite(nextSpan) || nextSpan <= 0) return;
+    if (nextSpan < minSpan) {
+      const mid = (start + end) / 2;
+      start = mid - minSpan / 2;
+      end = mid + minSpan / 2;
+      nextSpan = minSpan;
+    }
+    if (nextSpan > 1) {
+      start = 0;
+      end = 1;
+      nextSpan = 1;
+    }
+    if (start < 0) {
+      start = 0;
+      end = nextSpan;
+    }
+    if (end > 1) {
+      end = 1;
+      start = 1 - nextSpan;
+    }
+    setView({ start, end });
+  }, [minSpan]);
+
+  const zoomAt = useCallback((factor: number, anchor: number) => {
+    const { start, end } = viewRef.current;
+    const currentSpan = end - start;
+    if (!Number.isFinite(currentSpan) || currentSpan <= 0) return;
+    const nextSpan = Math.max(
+      minSpan,
+      Math.min(1, currentSpan / factor),
+    );
+    const ratio = Math.max(
+      0,
+      Math.min(1, (anchor - start) / currentSpan),
+    );
+    let nextStart = anchor - ratio * nextSpan;
+    if (nextStart < 0) nextStart = 0;
+    if (nextStart + nextSpan > 1) nextStart = 1 - nextSpan;
+    setView({ start: nextStart, end: nextStart + nextSpan });
+  }, [minSpan]);
+
+  const panBy = useCallback((delta: number) => {
+    const { start, end } = viewRef.current;
+    const currentSpan = end - start;
+    let nextStart = start + delta;
+    if (nextStart < 0) nextStart = 0;
+    if (nextStart + currentSpan > 1) nextStart = 1 - currentSpan;
+    setView({ start: nextStart, end: nextStart + currentSpan });
+  }, []);
+
+  // Keep the pointer-move listener stable while always reading the latest
+  // track/snap state. Without this, playback re-registers the listener on
+  // every animation frame.
+  const snapContextRef = useRef({
+    tracks,
+    snapEnabled,
+    span,
+    frameCount,
+  });
+  snapContextRef.current = { tracks, snapEnabled, span, frameCount };
+
+  const snapTime = useCallback(
+    (
+      raw: number,
+      width: number,
+      options?: { exclude?: Selection[]; disable?: boolean },
+    ): {
+      t: number;
+      guide: { t: number; kind: "keyframe" | "edge" } | null;
+    } => {
+      const { tracks, snapEnabled, span, frameCount } =
+        snapContextRef.current;
+      const clamped = Math.max(0, Math.min(1, raw));
+      if (!snapEnabled || options?.disable) {
+        return { t: clamped, guide: null };
+      }
+      const threshold = Math.max(
+        0.0005,
+        (8 / Math.max(1, width)) * span,
+      );
+      let best: {
+        t: number;
+        kind: "keyframe" | "edge";
+      } | null = null;
+      let bestDistance = threshold;
+
+      if (clamped < bestDistance) {
+        best = { t: 0, kind: "edge" };
+        bestDistance = clamped;
+      }
+      if (1 - clamped < bestDistance) {
+        best = { t: 1, kind: "edge" };
+        bestDistance = 1 - clamped;
+      }
+
+      const excluded = new Set(
+        (options?.exclude ?? []).map(
+          (item) => `${item.track}:${item.keyframe}`,
+        ),
+      );
+      for (
+        let trackIndex = 0;
+        trackIndex < tracks.length;
+        trackIndex += 1
+      ) {
+        const track = tracks[trackIndex]!;
+        for (
+          let keyframeIndex = 0;
+          keyframeIndex < track.keyframes.length;
+          keyframeIndex += 1
+        ) {
+          if (excluded.has(`${trackIndex}:${keyframeIndex}`)) continue;
+          const candidate = track.keyframes[keyframeIndex]!;
+          const distance = Math.abs(clamped - candidate.t);
+          if (distance < bestDistance) {
+            best = { t: candidate.t, kind: "keyframe" };
+            bestDistance = distance;
+          }
+        }
+      }
+
+      if (best) return { t: best.t, guide: best };
+      // Frame quantization is always on when snapping is enabled; only
+      // keyframe/edge snaps draw a guide.
+      return {
+        t: Math.round(clamped * frameCount) / frameCount,
+        guide: null,
+      };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const element = rootRef.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      // Don't change the window under an active drag/scrub.
+      if (scrubRef.current || dragRef.current || panRef.current) return;
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        const rect = rowsRef.current?.getBoundingClientRect();
+        const anchor = rect
+          ? ratioToTime(
+              Math.max(
+                0,
+                Math.min(
+                  1,
+                  (event.clientX - rect.left) /
+                    Math.max(1, rect.width),
+                ),
+              ),
+            )
+          : (viewRef.current.start + viewRef.current.end) / 2;
+        zoomAt(event.deltaY < 0 ? 1.2 : 1 / 1.2, anchor);
+        return;
+      }
+      if (
+        event.shiftKey ||
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ) {
+        event.preventDefault();
+        const width = rowsRef.current?.clientWidth ?? 800;
+        const { start, end } = viewRef.current;
+        panBy(
+          ((event.deltaX || event.deltaY) / Math.max(1, width)) *
+            (end - start),
         );
+      }
+    };
+    element.addEventListener("wheel", handleWheel, { passive: false });
+    return () => element.removeEventListener("wheel", handleWheel);
+  }, [panBy, ratioToTime, zoomAt]);
+
+  // Keep a zoomed-in window on the playhead whenever time moves (playback,
+  // Home/End, a drop). Panning alone does not move time, so a deliberate
+  // pan while paused is left alone.
+  useEffect(() => {
+    // A scrub maps pointer x to the current window; recentering mid-scrub
+    // would change that mapping under the cursor and make it jump.
+    if (scrubRef.current || dragRef.current) return;
+    const { start, end } = viewRef.current;
+    if (time >= start && time <= end) return;
+    const currentSpan = end - start;
+    let nextStart = time - currentSpan / 2;
+    if (nextStart < 0) nextStart = 0;
+    if (nextStart + currentSpan > 1) nextStart = 1 - currentSpan;
+    setView({ start: nextStart, end: nextStart + currentSpan });
+  }, [time]);
+
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      if (panRef.current) {
+        const { startX, startView } = panRef.current;
+        const width = rowsRef.current?.clientWidth ?? 800;
+        const delta =
+          -((event.clientX - startX) / Math.max(1, width)) *
+          (startView.end - startView.start);
+        applyView(startView.start + delta, startView.end + delta);
+        return;
+      }
+      if (dragRef.current) {
+        const drag = dragRef.current;
+        if (
+          !drag.moved &&
+          Math.abs(event.clientX - drag.startClientX) > 2
+        ) {
+          drag.moved = true;
+        }
+        if (!drag.moved) return;
+        const ratio =
+          (event.clientX - drag.rect.left) /
+          Math.max(1, drag.rect.width);
+        const snapped = snapTime(ratioToTime(ratio), drag.rect.width, {
+          exclude: drag.items.map((item) => ({
+            track: item.track,
+            keyframe: item.keyframe,
+          })),
+          disable: event.altKey,
+        });
+        setSnapGuide(snapped.guide);
+        const anchor =
+          drag.items.find(
+            (item) =>
+              item.track === drag.anchor.track &&
+              item.keyframe === drag.anchor.keyframe,
+          ) ?? drag.items[0];
+        if (!anchor) return;
+        const minStart = Math.min(
+          ...drag.items.map((item) => item.startT),
+        );
+        const maxStart = Math.max(
+          ...drag.items.map((item) => item.startT),
+        );
+        const delta = Math.max(
+          -minStart,
+          Math.min(1 - maxStart, snapped.t - anchor.startT),
+        );
+        drag.lastT = anchor.startT + delta;
+        handlersRef.current.onMoveMany(
+          drag.items.map((item) => ({
+            track: item.track,
+            keyframe: item.keyframe,
+            t: item.startT + delta,
+          })),
+        );
+        // Follow the grabbed diamond with the playhead so the canvas keeps
+        // previewing the pose live. The playhead is intentionally not a
+        // snap target here: it moves with the drag and would be sticky.
+        if (drag.lastT != null) {
+          handlersRef.current.onScrub(drag.lastT);
+        }
         return;
       }
       if (scrubRef.current) {
         const rect = scrubRef.current;
-        handlersRef.current.onScrub((e.clientX - rect.left) / rect.width);
+        const ratio =
+          (event.clientX - rect.left) / Math.max(1, rect.width);
+        const snapped = snapTime(ratioToTime(ratio), rect.width, {
+          disable: event.altKey,
+        });
+        setSnapGuide(snapped.guide);
+        handlersRef.current.onScrub(snapped.t);
       }
     };
     const up = () => {
       dragRef.current = null;
       scrubRef.current = null;
+      panRef.current = null;
+      setSnapGuide(null);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -10622,7 +11407,7 @@ function Timeline({
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
     };
-  }, []);
+  }, [applyView, ratioToTime, snapTime]);
 
   // Group tracks by target element
   const groupedTracks = useMemo(() => {
@@ -10643,12 +11428,9 @@ function Timeline({
     });
   };
 
-  const safeDuration =
-    Number.isFinite(duration) && duration > 0 ? duration : 1000;
-  const durationSeconds = safeDuration / 1000;
-  const currentSeconds = time * durationSeconds;
-
-  const [durationDraft, setDurationDraft] = useState(String(safeDuration / 1000));
+  const [durationDraft, setDurationDraft] = useState(
+    String(safeDuration / 1000),
+  );
   useEffect(() => {
     setDurationDraft(String(safeDuration / 1000));
   }, [safeDuration]);
@@ -10665,50 +11447,80 @@ function Timeline({
     onDurationChange(clamped);
   };
 
-  // Ruler ticks: denser for short clips, sparser for long ones. Each major
-  // tick is subdivided into 5 minor ticks so frame timing is easier to read.
+  // Ruler ticks adapt to the visible slice. Zoomed all the way in, labels
+  // land on frame boundaries (the closest zoom shows two frames); zoomed
+  // out, they become seconds. Minor ticks stay at a fifth of the major step.
+  const frameSeconds = 1 / Math.max(1, fps);
   const tickStep =
-    durationSeconds <= 2
-      ? 0.25
-      : durationSeconds <= 5
-        ? 0.5
-        : durationSeconds <= 15
-          ? 1
-          : 2;
-  const minorDivisions = tickStep >= 2 ? 2 : 5;
+    visibleSeconds <= frameSeconds * 3
+      ? frameSeconds
+      : visibleSeconds <= 0.5
+        ? Math.max(frameSeconds * 2, 0.02)
+        : visibleSeconds <= 1
+        ? 0.1
+        : visibleSeconds <= 2
+          ? 0.25
+          : visibleSeconds <= 5
+            ? 0.5
+            : visibleSeconds <= 15
+              ? 1
+              : visibleSeconds <= 30
+                ? 2
+                : 5;
   const markers = useMemo(() => {
     const next: number[] = [];
-    for (let sec = 0; sec < durationSeconds - 1e-6; sec += tickStep) {
+    const first = Math.ceil((visibleStartSec - 1e-9) / tickStep) * tickStep;
+    for (
+      let sec = first;
+      sec <= visibleEndSec + 1e-9;
+      sec += tickStep
+    ) {
       next.push(Math.round(sec * 1000) / 1000);
     }
-    next.push(Math.round(durationSeconds * 1000) / 1000);
+    // Always label the right edge, which is the clip end when fully zoomed
+    // out and the window edge otherwise.
+    const end = Math.round(visibleEndSec * 1000) / 1000;
+    if (
+      end > 1e-6 &&
+      Math.abs(end - (next[next.length - 1] ?? 0)) > 1e-6
+    ) {
+      next.push(end);
+    }
     return next;
-  }, [durationSeconds, tickStep]);
+  }, [tickStep, visibleEndSec, visibleStartSec]);
 
+  const minorDivisions = 5;
   const minorMarkers = useMemo(() => {
     const step = tickStep / minorDivisions;
     const next: number[] = [];
-    for (let i = 1; i * step < durationSeconds - 1e-6; i += 1) {
-      if (i % minorDivisions === 0) continue;
-      next.push(Math.round(i * step * 1000) / 1000);
+    const first = Math.ceil((visibleStartSec - 1e-9) / step) * step;
+    for (
+      let index = 0;
+      first + index * step <= visibleEndSec + 1e-9;
+      index += 1
+    ) {
+      const sec = first + index * step;
+      if (Math.abs(sec / tickStep - Math.round(sec / tickStep)) < 1e-6) {
+        continue;
+      }
+      next.push(Math.round(sec * 1000) / 1000);
     }
     return next;
-  }, [durationSeconds, tickStep, minorDivisions]);
+  }, [minorDivisions, tickStep, visibleEndSec, visibleStartSec]);
 
-  const rulerRef = useRef<HTMLDivElement>(null);
   const heightDragRef = useRef<{
     startY: number;
     startHeight: number;
   } | null>(null);
 
   useEffect(() => {
-    const move = (e: PointerEvent) => {
+    const move = (event: PointerEvent) => {
       const drag = heightDragRef.current;
       if (!drag) return;
       const maxHeight = Math.max(320, window.innerHeight - 220);
       const next = Math.min(
         maxHeight,
-        Math.max(180, drag.startHeight - (e.clientY - drag.startY)),
+        Math.max(180, drag.startHeight - (event.clientY - drag.startY)),
       );
       onHeightChange(Math.round(next));
     };
@@ -10725,19 +11537,82 @@ function Timeline({
     };
   }, [onHeightChange]);
 
-  const startRulerScrub = (e: React.PointerEvent<HTMLDivElement>) => {
-    const rect = rulerRef.current?.getBoundingClientRect();
+  const beginScrub = (
+    event: React.PointerEvent<HTMLDivElement>,
+    ruler: boolean,
+  ) => {
+    // Right-click should leave the selection and playhead alone.
+    if (event.button !== 0 && event.button !== 1) return;
+    if (event.button === 1) {
+      event.preventDefault();
+      panRef.current = {
+        startX: event.clientX,
+        startView: viewRef.current,
+      };
+      return;
+    }
+    const rect = (
+      ruler ? rulerRef.current : event.currentTarget
+    )?.getBoundingClientRect();
     if (!rect) return;
     scrubRef.current = rect;
-    onSelect(null);
-    onScrub((e.clientX - rect.left) / rect.width);
+    onSelectKeyframe(null);
+    const snapped = snapTime(
+      ratioToTime((event.clientX - rect.left) / Math.max(1, rect.width)),
+      rect.width,
+      { disable: event.altKey },
+    );
+    setSnapGuide(snapped.guide);
+    onScrub(snapped.t);
   };
 
-  const startScrub = (e: React.PointerEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    scrubRef.current = rect;
-    onSelect(null);
-    onScrub((e.clientX - rect.left) / rect.width);
+  const startRulerScrub = (event: React.PointerEvent<HTMLDivElement>) =>
+    beginScrub(event, true);
+  const startScrub = (event: React.PointerEvent<HTMLDivElement>) =>
+    beginScrub(event, false);
+
+  const startKeyframeDrag = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    trackIndex: number,
+    keyframeIndex: number,
+    keyframe: Keyframe,
+  ) => {
+    event.stopPropagation();
+    if (event.button !== 0) return;
+    const rect = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!rect) return;
+
+    const next = { track: trackIndex, keyframe: keyframeIndex };
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    if (additive) {
+      onSelectKeyframe(next, true);
+      return;
+    }
+
+    const alreadySelected = selectedKeyframes.some(
+      (item) =>
+        item.track === trackIndex && item.keyframe === keyframeIndex,
+    );
+    const dragged =
+      alreadySelected && selectedKeyframes.length > 0
+        ? selectedKeyframes
+        : [next];
+    if (alreadySelected) onActivateKeyframe(next);
+    else onSelectKeyframe(next, false);
+
+    dragRef.current = {
+      anchor: next,
+      startClientX: event.clientX,
+      rect,
+      moved: false,
+      lastT: null,
+      items: dragged.map((item) => ({
+        ...item,
+        startT:
+          tracks[item.track]?.keyframes[item.keyframe]?.t ?? 0,
+      })),
+    };
+    onScrub(keyframe.t);
   };
 
   const keyframeMarker = (
@@ -10745,44 +11620,56 @@ function Timeline({
     kfIndex: number,
     keyframe: Keyframe,
   ) => {
+    if (!isTimeVisible(keyframe.t)) return null;
     const active =
       selection?.track === trackIndex && selection.keyframe === kfIndex;
+    const selected = selectedKeyframes.some(
+      (item) =>
+        item.track === trackIndex && item.keyframe === kfIndex,
+    );
     const property = tracks[trackIndex]?.property;
-    const label = property ? PROPERTY_DEFINITIONS[property].label : "Keyframe";
+    const label = property
+      ? PROPERTY_DEFINITIONS[property].label
+      : "Keyframe";
+    const leftPercent = timeToPercent(keyframe.t);
+    // At t=0 / t=1 the centered diamond would be clipped in half by the
+    // track's overflow. Align it inside the edge instead.
+    const horizontalAnchor =
+      leftPercent <= 0.5
+        ? "translate-x-0"
+        : leftPercent >= 99.5
+          ? "-translate-x-full"
+          : "-translate-x-1/2";
+    const timecode = formatSecondsMs(keyframe.t * durationSeconds);
     return (
       <button
         key={`${trackIndex}-${kfIndex}`}
         type="button"
-        title={`${label} · ${Math.round(keyframe.t * 100)}% = ${keyframe.v}`}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          const rect = e.currentTarget.parentElement?.getBoundingClientRect();
-          if (!rect) return;
-          dragRef.current = {
-            track: trackIndex,
-            keyframe: kfIndex,
-            rect,
-          };
-          onSelect({ track: trackIndex, keyframe: kfIndex });
-          onScrub(keyframe.t);
-        }}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
+        title={`${label} · ${timecode} · ${keyframe.v}`}
+        aria-label={`${label} keyframe at ${timecode}`}
+        onPointerDown={(event) =>
+          startKeyframeDrag(event, trackIndex, kfIndex, keyframe)
+        }
+        onDoubleClick={(event) => {
+          event.stopPropagation();
           onRemove(trackIndex, kfIndex);
-          onSelect(null);
+          onSelectKeyframe(null);
         }}
-        className={`absolute top-1/2 z-10 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-grab rounded-sm border-2 transition-colors active:cursor-grabbing ${
+        className={`absolute top-1/2 z-10 size-3 -translate-y-1/2 rotate-45 cursor-grab rounded-sm border-2 transition-colors active:cursor-grabbing ${horizontalAnchor} ${
           active
-            ? "border-primary bg-primary scale-125"
-            : "border-background bg-blue-400 hover:bg-blue-300"
+            ? "border-primary bg-primary scale-125 z-20"
+            : selected
+              ? "border-primary bg-primary/70 z-20"
+              : "border-background bg-blue-400 hover:bg-blue-300"
         }`}
-        style={{ left: `${keyframe.t * 100}%` }}
+        style={{ left: `${leftPercent}%` }}
       />
     );
   };
 
   return (
     <div
+      ref={rootRef}
       // relative + z-10: the timeline stretches left under the sidebar,
       // and the sidebar container is position:relative, so without this
       // its right border painted over the timeline's left strip.
@@ -10798,9 +11685,12 @@ function Timeline({
         role="separator"
         aria-orientation="horizontal"
         aria-label="Resize timeline"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          heightDragRef.current = { startY: e.clientY, startHeight: height };
+        onPointerDown={(event) => {
+          event.preventDefault();
+          heightDragRef.current = {
+            startY: event.clientY,
+            startHeight: height,
+          };
         }}
         onDoubleClick={() => onHeightChange(256)}
         className="group relative -mt-px flex h-2 shrink-0 cursor-ns-resize items-center justify-center bg-[#1a1a1a] transition-colors hover:bg-primary/30"
@@ -10809,48 +11699,153 @@ function Timeline({
         <span className="h-0.5 w-10 rounded-full bg-border transition-colors group-hover:bg-primary" />
       </div>
 
-      {/* Transport — one row for playback, timing, duration and looping */}
+      {/* Transport — playback, timecode, frame rate, snapping, zoom,
+          duration and looping in one row. */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 bg-[#222] px-3">
-        <div className="flex items-center gap-1 rounded-full bg-[#2c2c2c] p-1 shadow-inner">
+        <div className="flex shrink-0 items-center gap-1 rounded-full bg-[#2c2c2c] p-1 shadow-inner">
           <button
             type="button"
             onClick={() => onScrub(0)}
             className="relative group grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
             aria-label="Back to start"
+            title="Back to start"
           >
             <IconPlayerSkipBackFilled className="size-3.5" />
-            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Start</span>
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">
+              Start
+            </span>
           </button>
           <button
             type="button"
             onClick={onTogglePlay}
             className="relative group grid size-8 place-items-center rounded-full bg-[#2391FF] text-white shadow-md shadow-[#2391FF]/40 transition-all hover:scale-105 hover:bg-[#1f7fe0] active:scale-95"
             aria-label={playing ? "Pause" : "Play"}
+            title={playing ? "Pause (Space)" : "Play (Space)"}
           >
             {playing ? (
               <IconPlayerPauseFilled className="size-4" />
             ) : (
               <IconPlayerPlayFilled className="size-4" />
             )}
-            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">{playing ? "Pause" : "Play"}</span>
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">
+              {playing ? "Pause" : "Play"}
+            </span>
           </button>
         </div>
 
-        <div className="flex items-baseline gap-1 rounded-full bg-[#2c2c2c] px-2.5 py-1 text-[11px] tabular-nums shadow-inner">
+        <div className="flex shrink-0 items-baseline gap-1 rounded-full bg-[#2c2c2c] px-2.5 py-1 text-[10px] tabular-nums shadow-inner">
           <span className="font-mono text-foreground">
-            {formatSeconds(currentSeconds)}
+            {formatSecondsMs(time * durationSeconds)}
           </span>
-          <span className="text-muted-foreground/60">/</span>
-          <span className="font-mono text-muted-foreground">
-            {formatSeconds(durationSeconds)}
+          <span className="hidden text-muted-foreground/60 sm:inline">
+            /
+          </span>
+          <span className="hidden font-mono text-muted-foreground sm:inline">
+            {formatSecondsMs(durationSeconds)}
           </span>
         </div>
 
-        <span className="ml-2 hidden min-w-0 flex-1 truncate text-[10px] text-muted-foreground lg:block">
-          Drag diamonds to retime · Double-click a track to add a keyframe · [ ] step keyframes · Cmd/Ctrl+C/V copy/paste a keyframe
+        <div className="hidden shrink-0 md:block">
+          <Select
+            value={String(fps)}
+            onValueChange={(value) => onFpsChange(Number(value))}
+          >
+            <SelectTrigger
+              className="h-7 w-[78px] text-[11px]"
+              aria-label="Frame rate"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {FPS_OPTIONS.map((option) => (
+                <SelectItem
+                  key={option}
+                  value={String(option)}
+                  className="text-[11px]"
+                >
+                  {option} fps
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <span className="ml-1 hidden min-w-0 flex-1 truncate text-[10px] text-muted-foreground xl:block">
+          Drag diamonds to retime · Shift/Ctrl-click multi-select ·
+          Double-click a track to add · Cmd/Ctrl+wheel zoom · Shift+wheel
+          pan · [ ] step · Alt disables snap
         </span>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {selectedKeyframes.length > 1 ? (
+            <span className="hidden shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary lg:inline">
+              {selectedKeyframes.length} selected
+            </span>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => onSnapChange(!snapEnabled)}
+            className={`relative group grid size-7 place-items-center rounded-full transition-colors ${
+              snapEnabled
+                ? "bg-primary/20 text-primary"
+                : "text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            }`}
+            aria-label={
+              snapEnabled
+                ? "Disable timeline snapping"
+                : "Enable timeline snapping"
+            }
+            aria-pressed={snapEnabled}
+            title={
+              snapEnabled
+                ? "Snap on — hold Alt while dragging to disable"
+                : "Snap off"
+            }
+          >
+            {snapEnabled ? (
+              <IconMagnetFilled className="size-4" />
+            ) : (
+              <IconMagnet className="size-4" />
+            )}
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">
+              {snapEnabled ? "Snap on" : "Snap off"} · Alt disables
+            </span>
+          </button>
+
+          <div className="flex items-center gap-0.5 rounded-full bg-[#2c2c2c] p-1 shadow-inner">
+            <button
+              type="button"
+              onClick={() => zoomAt(1 / 1.5, zoomAnchor)}
+              className="grid size-6 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+              aria-label="Zoom out timeline"
+              title="Zoom out timeline"
+            >
+              <IconZoomOut className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => zoomAt(1.5, zoomAnchor)}
+              className="grid size-6 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+              aria-label="Zoom in timeline"
+              title="Zoom in timeline"
+            >
+              <IconZoomIn className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyView(0, 1)}
+              className="grid size-6 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+              aria-label="Fit timeline"
+              title="Fit full timeline"
+            >
+              <IconMaximize className="size-3.5" />
+            </button>
+          </div>
+          <span className="hidden w-12 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground sm:inline">
+            {Math.round((1 / span) * 100)}%
+          </span>
+
           <div className="flex items-center gap-1.5">
             <Input
               type="number"
@@ -10858,16 +11853,19 @@ function Timeline({
               max={60}
               step={0.1}
               value={durationDraft}
-              onChange={(e) => setDurationDraft(e.target.value)}
+              onChange={(event) =>
+                setDurationDraft(event.target.value)
+              }
               onBlur={commitDuration}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.currentTarget.blur();
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
               }}
               className="h-7 w-16 text-[11px]"
               aria-label="Duration in seconds"
             />
             <span className="text-[10px] text-muted-foreground">s</span>
           </div>
+
           <button
             type="button"
             onClick={onToggleLoop}
@@ -10878,9 +11876,12 @@ function Timeline({
             }`}
             aria-label={loop ? "Disable looping" : "Enable looping"}
             aria-pressed={loop}
+            title={loop ? "Looping on" : "Looping off"}
           >
             <IconRepeat className="size-4" />
-            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">Loop</span>
+            <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[11px] font-medium text-background opacity-0 shadow transition-opacity group-hover:opacity-100">
+              Loop
+            </span>
           </button>
         </div>
       </div>
@@ -10888,32 +11889,39 @@ function Timeline({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tracks.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-            No animation tracks yet — select an element, open Properties → Animate, and add a property.
+            No animation tracks yet — select an element, open Properties →
+            Animate, and add a property.
           </div>
         ) : (
           <>
-            {/* Time ruler — also a scrub surface */}
+            {/* Time ruler — also a scrub surface. Markers are generated for
+                the visible slice only, so zoomed-in views stay readable. */}
             <div className="sticky top-0 z-30 flex h-9 border-b border-border/50 bg-[#1e1e1e]">
               <div className="w-52 shrink-0 border-r border-border/50" />
               <div
                 ref={rulerRef}
-                className="relative min-w-0 flex-1 cursor-ew-resize"
+                className="relative min-w-0 flex-1 cursor-ew-resize overflow-hidden"
                 onPointerDown={startRulerScrub}
                 aria-hidden="true"
               >
-                {minorMarkers.map((sec) => (
-                  <span
-                    key={`minor-${sec}`}
-                    className="absolute bottom-0 h-1 w-px -translate-x-1/2 bg-border/30"
-                    style={{ left: `${(sec / durationSeconds) * 100}%` }}
-                  />
-                ))}
-                {markers.map((sec, index) => {
-                  const percent = (sec / durationSeconds) * 100;
+                {minorMarkers.map((sec) => {
+                  const percent = timeToPercent(sec / durationSeconds);
+                  if (percent < -1 || percent > 101) return null;
+                  return (
+                    <span
+                      key={`minor-${sec}`}
+                      className="absolute bottom-0 h-1 w-px -translate-x-1/2 bg-border/30"
+                      style={{ left: `${percent}%` }}
+                    />
+                  );
+                })}
+                {markers.map((sec) => {
+                  const percent = timeToPercent(sec / durationSeconds);
+                  if (percent < -1 || percent > 101) return null;
                   const anchor =
-                    index === 0
+                    percent <= 0.5
                       ? ""
-                      : index === markers.length - 1
+                      : percent >= 99.5
                         ? "-translate-x-full"
                         : "-translate-x-1/2";
                   return (
@@ -10931,21 +11939,35 @@ function Timeline({
                     </div>
                   );
                 })}
-                <div
-                  className="pointer-events-none absolute inset-y-0 z-10 w-0.5 -translate-x-1/2 bg-primary shadow-[0_0_10px_1px_rgba(35,145,255,0.6)]"
-                  style={{ left: `${time * 100}%` }}
-                />
-                {/* Grabbable playhead head — drag it to move the frame */}
-                <div
-                  className="group absolute top-0 z-20 -translate-x-1/2 cursor-grab px-3 pb-1.5 pt-0.5 active:cursor-grabbing"
-                  style={{ left: `${time * 100}%` }}
-                  title={`Playhead · ${formatSeconds(currentSeconds)}`}
-                >
+                {snapGuide ? (
                   <div
-                    className="size-0 origin-top border-x-[7px] border-t-[11px] border-x-transparent border-t-primary transition-transform group-hover:scale-125"
-                    style={{ filter: "drop-shadow(0 1px 2px rgb(0 0 0 / 0.5))" }}
+                    className="pointer-events-none absolute inset-y-0 z-20 w-px bg-amber-400"
+                    style={{ left: `${safePercent(snapGuide.t)}%` }}
                   />
-                </div>
+                ) : null}
+                {playheadVisible ? (
+                  <>
+                    <div
+                      className="pointer-events-none absolute inset-y-0 z-10 w-0.5 -translate-x-1/2 bg-primary shadow-[0_0_10px_1px_rgba(35,145,255,0.6)]"
+                      style={{ left: `${playheadPercent}%` }}
+                    />
+                    <div
+                      className={`group absolute top-0 z-20 cursor-grab px-3 pb-1.5 pt-0.5 active:cursor-grabbing ${playheadAnchor}`}
+                      style={{ left: `${playheadPercent}%` }}
+                      title={`Playhead · ${formatSecondsMs(
+                        time * durationSeconds,
+                      )}`}
+                    >
+                      <div
+                        className="size-0 origin-top border-x-[7px] border-t-[11px] border-x-transparent border-t-primary transition-transform group-hover:scale-125"
+                        style={{
+                          filter:
+                            "drop-shadow(0 1px 2px rgb(0 0 0 / 0.5))",
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : null}
               </div>
             </div>
 
@@ -10990,14 +12012,19 @@ function Timeline({
                               >
                                 <span className="size-1.5 shrink-0 rounded-full bg-primary/60" />
                                 <span className="truncate text-[11px] text-muted-foreground">
-                                  {PROPERTY_DEFINITIONS[track.property].label}
+                                  {
+                                    PROPERTY_DEFINITIONS[track.property]
+                                      .label
+                                  }
                                 </span>
                                 <button
                                   type="button"
                                   onClick={() => onAdd(trackIndex)}
                                   className="ml-auto grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
                                   title="Add keyframe at playhead"
-                                  aria-label={`Add ${PROPERTY_DEFINITIONS[track.property].label} keyframe at playhead`}
+                                  aria-label={`Add ${
+                                    PROPERTY_DEFINITIONS[track.property].label
+                                  } keyframe at playhead`}
                                 >
                                   <IconPlus className="size-3" />
                                 </button>
@@ -11011,11 +12038,26 @@ function Timeline({
               </div>
 
               {/* Track rows */}
-              <div className="relative min-w-0 flex-1">
-                <div
-                  className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-primary shadow-[0_0_10px_1px_rgba(35,145,255,0.6)]"
-                  style={{ left: `${time * 100}%` }}
-                />
+              <div
+                ref={rowsRef}
+                className="relative min-w-0 flex-1 overflow-hidden"
+              >
+                {snapGuide ? (
+                  <div
+                    className="pointer-events-none absolute inset-y-0 z-30 w-px bg-amber-400"
+                    style={{ left: `${safePercent(snapGuide.t)}%` }}
+                  >
+                    <span className="absolute left-0 top-0 -translate-x-1/2 rounded-b bg-amber-400 px-1 text-[9px] font-medium text-black">
+                      {snapGuide.kind}
+                    </span>
+                  </div>
+                ) : null}
+                {playheadVisible ? (
+                  <div
+                    className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-primary shadow-[0_0_10px_1px_rgba(35,145,255,0.6)]"
+                    style={{ left: `${playheadPercent}%` }}
+                  />
+                ) : null}
                 {Object.entries(groupedTracks).map(
                   ([target, elementTracks]) => {
                     const isExpanded = expandedElements.has(target);
@@ -11028,8 +12070,13 @@ function Timeline({
                           {!isExpanded &&
                             elementTracks.flatMap((track) => {
                               const trackIndex = tracks.indexOf(track);
-                              return track.keyframes.map((keyframe, kfIndex) =>
-                                keyframeMarker(trackIndex, kfIndex, keyframe),
+                              return track.keyframes.map(
+                                (keyframe, kfIndex) =>
+                                  keyframeMarker(
+                                    trackIndex,
+                                    kfIndex,
+                                    keyframe,
+                                  ),
                               );
                             })}
                         </div>
@@ -11041,22 +12088,26 @@ function Timeline({
                                 key={track.property}
                                 className="relative h-8 border-b border-border/20 hover:bg-white/5"
                                 onPointerDown={startScrub}
-                                onDoubleClick={(e) => {
+                                onDoubleClick={(event) => {
                                   const rect =
-                                    e.currentTarget.getBoundingClientRect();
+                                    event.currentTarget.getBoundingClientRect();
                                   onAdd(
                                     trackIndex,
-                                    (e.clientX - rect.left) / rect.width,
+                                    ratioToTime(
+                                      (event.clientX - rect.left) /
+                                        Math.max(1, rect.width),
+                                    ),
                                   );
                                 }}
                               >
                                 <div className="absolute inset-x-0 top-1/2 h-px bg-border/30" />
-                                {track.keyframes.map((keyframe, kfIndex) =>
-                                  keyframeMarker(
-                                    trackIndex,
-                                    kfIndex,
-                                    keyframe,
-                                  ),
+                                {track.keyframes.map(
+                                  (keyframe, kfIndex) =>
+                                    keyframeMarker(
+                                      trackIndex,
+                                      kfIndex,
+                                      keyframe,
+                                    ),
                                 )}
                               </div>
                             );
@@ -11074,16 +12125,13 @@ function Timeline({
   );
 }
 
-function formatSeconds(seconds: number): string {
-  if (!Number.isFinite(seconds)) return "0.00s";
-  return `${seconds.toFixed(2)}s`;
-}
-
 function formatMarker(seconds: number): string {
   if (!Number.isFinite(seconds)) return "0s";
-  return Number.isInteger(seconds)
-    ? `${seconds}s`
-    : `${seconds.toFixed(2).replace(/0$/, "")}s`;
+  if (Number.isInteger(seconds)) return `${seconds}s`;
+  // Keep enough precision for extreme zoom (where ticks can be sub-frame)
+  // without turning normal second labels into long decimals.
+  const decimals = Math.abs(seconds) < 0.1 ? 3 : 2;
+  return `${seconds.toFixed(decimals).replace(/\.?0+$/, "")}s`;
 }
 
 interface AspectRatioPreset {

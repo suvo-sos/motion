@@ -17,6 +17,8 @@ export interface NavigationState {
   view?: string;
   path?: string;
   publicPath?: string;
+  query?: string;
+  searchParams?: Record<string, string>;
   threadId?: string;
 }
 
@@ -32,10 +34,14 @@ export function useNavigationState() {
 export function commandPathForNavigation(command: NavigationState): string {
   const fallbackPath = pathForCommand(command);
   const path = typeof command?.path === "string" ? command.path : "";
-  if (!path) return fallbackPath;
+  // Carry any query parameters the agent attached (e.g. /motion?id=...).
+  const extraQuery = commandHasQuery(command) && !path.includes("?")
+    ? buildQueryFromCommand(command)
+    : "";
+  if (!path) return `${fallbackPath}${extraQuery}`;
 
   const basePath = appBasePath();
-  if (!basePath) return path;
+  if (!basePath) return `${path}${extraQuery}`;
 
   const suffixIndex = path.search(/[?#]/);
   const pathname = suffixIndex === -1 ? path : path.slice(0, suffixIndex);
@@ -53,9 +59,29 @@ export function commandPathForNavigation(command: NavigationState): string {
     (matchesPathPrefix(pathname, publicViewPath) ||
       (declaredPublicPath && declaredPublicPath === pathname))
   ) {
-    return `${pathname.slice(basePath.length) || "/"}${suffix}`;
+    return `${pathname.slice(basePath.length) || "/"}${suffix}${suffix ? "" : extraQuery}`;
   }
-  return path;
+  return `${path}${extraQuery}`;
+}
+
+function commandHasQuery(command: NavigationState): boolean {
+  if (typeof command?.query === "string" && command.query.trim()) return true;
+  if (command?.searchParams && Object.keys(command.searchParams).length > 0)
+    return true;
+  return false;
+}
+
+function buildQueryFromCommand(command: NavigationState): string {
+  const params = new URLSearchParams();
+  if (typeof command?.query === "string") {
+    const q = command.query.startsWith("?") ? command.query.slice(1) : command.query;
+    new URLSearchParams(q).forEach((v, k) => params.set(k, v));
+  }
+  if (command?.searchParams) {
+    for (const [k, v] of Object.entries(command.searchParams)) params.set(k, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : "";
 }
 
 function matchesPathPrefix(pathname: string, prefix: string): boolean {
