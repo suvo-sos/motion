@@ -54,8 +54,8 @@ The project library is stored in the browser, not in Postgres:
 - Auth is disabled by default (and `AUTH_DISABLED=true` is set in Vercel), so
   there are no accounts or login sessions.
 - Postgres is only a short-lived scratchpad for the agent. The
-  `purge-ephemeral-data` action deletes rows older than 24 hours; scheduling it
-  is optional (Vercel cron is currently disabled in `vercel.json`).
+  `purge-ephemeral-data` action can delete rows older than 24 hours, but it is
+  not scheduled automatically.
 
 For Vercel, set only:
 

@@ -208,7 +208,7 @@ export function importLocalProject(animation: MotionAnimation & {
 
 /**
  * Mirror a browser project into the server scratchpad so the agent can read
- * the current canvas. This is ephemeral: a cron deletes old rows.
+ * the current canvas. This is ephemeral: cleanup can delete old rows.
  */
 export async function syncProjectToServer(id: string): Promise<void> {
   if (!SERVER_SCRATCHPAD_ENABLED) return;

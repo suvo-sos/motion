@@ -10,7 +10,7 @@ import { getDb } from "../server/db";
  * Project libraries live in the browser. The only rows that reach Postgres are
  * the agent's temporary working copies plus chat/run telemetry. This action
  * removes anything older than the retention window so a demo deployment never
- * accumulates user data. Wire it to a Vercel cron (see vercel.json).
+ * accumulates user data. Nothing schedules it; call it manually when needed.
  */
 export default defineAction({
   description:
@@ -48,7 +48,7 @@ export default defineAction({
     await purge(sql`delete from sync_events where created_at < ${cutoff}`);
     await purge(sql`delete from application_state where updated_at < ${cutoff}`);
     // Deliberately never touch `animations`: if DB-backed projects are turned
-    // back on, a cron must not delete a user's work.
+    // back on, cleanup must not delete a user's work.
 
     // Auth is disabled for the hackathon build, so no session rows are needed.
     if (process.env.AUTH_DISABLED?.trim().toLowerCase() === "true") {
