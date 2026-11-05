@@ -10,7 +10,7 @@ changes stay in sync between chat and the studio.
 
 - Repository: https://github.com/suvo-sos/motion
 - Demo clip: (add public Clips link here — must be viewable without login)
-- Live demo: (optional)
+- Live demo: https://motion-studio-5z5w3x2ws-wero5.vercel.app/
 
 ## Creator / team
 

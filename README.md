@@ -6,16 +6,21 @@ An agent-native SVG animation studio where you describe motion and the agent cre
 
 ## Features
 
-- 🎨 **AI-Powered Animation**: Describe any animation and watch the agent create it
-- ⏱️ **Timeline Editor**: Zoom, pan, frame stepping, snapping, and multi-keyframe editing with easing controls
-- 🎯 **Precision Tools**: Transform, node editing, align, distribute, and snap to frames, keyframes, and clip edges
-- 📐 **Drawing Tools**: Pen tool, shapes (rectangles, circles, stars), and text
-- 🖼️ **Image Support**: Drag-and-drop images with smart positioning
-- 🎬 **Layer Management**: Full layer control with bring to front/send to back
-- 🏷️ **Element Tagging**: Right-click elements or groups to tag several of them as chips in one agent prompt
-- 📤 **SVG Export**: Export standalone animated SVG files
-- 🔄 **Real-time Sync**: Changes sync instantly across all sessions
-- 💾 **Auto-save**: All projects saved automatically
+- AI-Powered Animation: Describe any animation and watch the agent create it
+- Timeline Editor: Zoom, pan, frame stepping, snapping, and multi-keyframe editing with easing controls
+- Precision Tools: Transform, node editing, align, distribute, and snap to frames, keyframes, and clip edges
+- Drawing Tools: Pen tool, shapes (rectangles, circles, stars), and text
+- Image Support: Drag-and-drop images with smart positioning
+- Layer Management: Full layer control with bring to front/send to back
+- Element Tagging: Right-click elements or groups to tag several of them as chips in one agent prompt
+- SVG Export: Export standalone animated SVG files
+- Real-time Sync: Changes sync instantly across all sessions
+- Auto-save: All projects saved automatically
+
+## Demo
+
+- Live demo: https://motion-studio-5z5w3x2ws-wero5.vercel.app/
+- Public Clips recording: (add public Clips link here — must be viewable without login)
 
 ## Run this project
 
@@ -30,7 +35,7 @@ pnpm dev
 
 Open the URL printed by Vite (default `http://localhost:8082`); `/` goes
 straight to the project launcher. If the agent needs a model that is not
-already available, connect an AI provider in Settings → Agent.
+already available, connect an AI provider in Settings -> Agent.
 
 ## Production
 
@@ -40,22 +45,25 @@ Production needs a persistent Postgres database:
 DATABASE_URL=postgres://...
 ```
 
-Auth is disabled for this hackathon build. Set `BETTER_AUTH_SECRET` only if you
-re-enable auth later.
+For a production deployment with authentication enabled, also set:
+
+```bash
+BETTER_AUTH_SECRET=<openssl rand -hex 32>
+```
 
 `netlify.toml` maps `NETLIFY_DATABASE_URL` to `DATABASE_URL` and runs
 migrations on production deploys. Then run `pnpm build` and `pnpm start`, or
-deploy with Netlify.
+deploy with Netlify / Vercel.
 
-### Hackathon deployment (no user data)
+### Hackathon demo (no login required)
 
-The project library is stored in the browser, not in Postgres:
+This build is designed to be tried without creating an account:
 
-- Saved projects live in `localStorage` (`motion-studio-projects:v1`).
-- Auth is enabled by default. `AUTH_DISABLED` is not set in production.
+- The app opens straight into the project launcher (`/` redirects to `/home`).
+- Saved projects live in the browser (`localStorage`, key
+  `motion-studio-projects:v1`), so no server-side user data is stored.
 - Postgres is only a short-lived scratchpad for the agent. The
-  `purge-ephemeral-data` action can delete rows older than 24 hours, but it is
-  not scheduled automatically.
+  `purge-ephemeral-data` action can delete rows older than 24 hours.
 
 For Vercel, set only:
 
@@ -70,9 +78,15 @@ browser.
 
 ## Quick Start
 
-1. **Describe it**: Use the prompt composer to describe an animation
-2. **Watch it move**: The agent creates the SVG and animation tracks
-3. **Shape it**: Edit keyframes on the timeline to perfect your timing
-4. **Export it**: Download a standalone animated SVG file
+1. Describe it: Use the prompt composer to describe an animation
+2. Watch it move: The agent creates the SVG and animation tracks
+3. Shape it: Edit keyframes on the timeline to perfect your timing
+4. Export it: Download a standalone animated SVG file
+
+## Contact
+
+- Creator: suvo
+- Email: suvo.uio@gmail.com
+- Repository: https://github.com/suvo-sos/motion
 
 Full docs: [agent-native.com/docs](https://agent-native.com/docs?utm_source=github&utm_medium=referral)
