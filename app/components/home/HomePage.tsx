@@ -3,6 +3,8 @@ import {
   navigateWithAgentChatViewTransition,
 } from "@agent-native/core/client/agent-chat";
 import { createAgentNativeAgentKitTransport } from "@agent-native/core/client/agentkit-chat/transport";
+import { buildSignInReturnHref } from "@agent-native/core/client/sign-in-return";
+import { useSession } from "@agent-native/core/client/use-session";
 import {
   saveLocalProject,
   syncProjectToServer,
@@ -646,6 +648,7 @@ function HomeAgentComposer({
 }) {
   const navigate = useNavigate();
   const realtimeVoice = useRealtimeVoiceModeOptional();
+  const { status: sessionStatus } = useSession();
   const [transport] = useState(() =>
     createAgentNativeAgentKitTransport({
       browserTabId: TAB_ID,
@@ -653,6 +656,38 @@ function HomeAgentComposer({
       adapter: { textFormat: "markdown" },
     }),
   );
+
+  // The AI composer needs a session: it crashes during anonymous SSR and its
+  // own session gate redirects public visitors to sign-in. Templates and
+  // local projects below work without an account, so the composer only mounts
+  // once signed in.
+  if (sessionStatus !== "authenticated") {
+    return (
+      <div
+        className="agentkit-tokens w-full max-w-[calc(var(--agent-kit-conversation-max-width,47rem)-2rem)] text-start"
+        data-agentkit-composer-size="large"
+      >
+        <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+          {sessionStatus === "loading" ? (
+            "Loading the AI composer…"
+          ) : (
+            <>
+              <span>
+                Sign in to chat with the AI agent — the studio below works
+                without an account.{" "}
+              </span>
+              <a
+                className="font-medium text-primary underline underline-offset-2"
+                href={buildSignInReturnHref({ returnTo: "/home" })}
+              >
+                Sign in
+              </a>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   function startVoiceChat() {
     rememberLastChatThread(threadId);
