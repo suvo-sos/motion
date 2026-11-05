@@ -43,3 +43,4 @@ learnings.md
 data/*.lock
 .vercel
 .env*.local
+supabase/.temp/

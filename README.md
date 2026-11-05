@@ -46,6 +46,28 @@ BETTER_AUTH_SECRET=<output of: openssl rand -hex 32>
 migrations on production deploys. Then run `pnpm build` and `pnpm start`, or
 deploy with Netlify.
 
+### Hackathon deployment (no user data)
+
+The project library is stored in the browser, not in Postgres:
+
+- Saved projects live in `localStorage` (`motion-studio-projects:v1`).
+- Auth is disabled by default (and `AUTH_DISABLED=true` is set in Vercel), so
+  there are no accounts or login sessions.
+- Postgres is only a short-lived scratchpad for the agent. The
+  `purge-ephemeral-data` action deletes rows older than 24 hours; scheduling it
+  is optional (Vercel cron is currently disabled in `vercel.json`).
+
+For Vercel, set only:
+
+```bash
+DATABASE_URL=postgres://...   # any free hosted Postgres (Neon/Supabase)
+```
+
+`BETTER_AUTH_SECRET` is optional while auth is disabled. Let the build run
+`pnpm migrate:production`; it creates the framework tables in that database.
+No project data needs to be imported — users create their own library in their
+browser.
+
 ## Quick Start
 
 1. **Describe it**: Use the prompt composer to describe an animation

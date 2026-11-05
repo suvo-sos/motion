@@ -3,7 +3,11 @@ import {
   navigateWithAgentChatViewTransition,
 } from "@agent-native/core/client/agent-chat";
 import { createAgentNativeAgentKitTransport } from "@agent-native/core/client/agentkit-chat/transport";
-import { useActionQuery, useActionMutation } from "@agent-native/core/client/hooks";
+import {
+  saveLocalProject,
+  syncProjectToServer,
+  useLocalProjects,
+} from "@/lib/local-projects";
 import { AgentKitComposer } from "@agent-native/toolkit/app/agentkit/react/components";
 import { useAgentKitControl } from "@agent-native/toolkit/app/agentkit/react/context";
 import { CoreComposerRuntimeProvider } from "@agent-native/toolkit/app/chat/agentkit-chat/composer";
@@ -155,12 +159,7 @@ export default function HomePage() {
   const [uploading, setUploading] = useState(false);
   const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
   const [view, setView] = useState<"projects" | "templates">("templates");
-  const save = useActionMutation("save-animation");
-  const projectsQuery = useActionQuery(
-    "list-animations",
-    { includeSvg: true },
-    { refetchInterval: 4000 } as any,
-  );
+  const { projects, isLoading: projectsLoading } = useLocalProjects();
 
   /**
    * Templates are complete animations, so this writes the project directly
@@ -179,14 +178,15 @@ export default function HomePage() {
           })
         : template.svg;
       if (!svg) throw new Error("Template has no SVG payload");
-      const result: any = await save.mutateAsync({
+      const result = saveLocalProject({
         title: template.label,
         svg,
         tracks: template.tracks ?? [],
         duration: template.duration,
         loop: template.loop,
       });
-      if (result?.id) {
+      void syncProjectToServer(result.id);
+      if (result.id) {
         // Opening a template is a new project, not a continuation of whatever
         // the agent sidebar last showed, so the studio starts on a new chat.
         startFreshStudioChat();
@@ -212,14 +212,15 @@ export default function HomePage() {
       const raw = await file.text();
       // Strip any script tags so an uploaded SVG can't execute code in the studio.
       const svg = raw.replace(/<script[\s\S]*?<\/script>/gi, "");
-      const result: any = await save.mutateAsync({
+      const result = saveLocalProject({
         title: file.name.replace(/\.svg$/i, ""),
         svg,
         tracks: [],
         duration: 2000,
         loop: true,
       });
-      if (result?.id) {
+      void syncProjectToServer(result.id);
+      if (result.id) {
         // Same as templates: a fresh project opens with a fresh chat.
         startFreshStudioChat();
         navigate(`/motion?id=${encodeURIComponent(result.id)}`);
@@ -231,8 +232,7 @@ export default function HomePage() {
     }
   }
 
-  const projects = ((projectsQuery.data as any)?.animations ??
-    []) as ProjectSummary[];
+
 
   function start(message: string, options: ChatInitialComposerOptions = {}) {
     rememberLastChatThread(threadId);
@@ -289,11 +289,8 @@ export default function HomePage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              {projectsQuery.isFetching ? (
-                <IconLoader2 className="size-3 animate-spin" />
-              ) : null}
               {view === "projects"
-                ? "Saved automatically"
+                ? "Saved in this browser"
                 : "Every preview is editable · click to add"}
             </span>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -323,7 +320,7 @@ export default function HomePage() {
           onUse={(template) => void createFromTemplate(template)}
         />
 
-        {projectsQuery.isLoading && projects.length === 0 ? (
+        {projectsLoading && projects.length === 0 ? (
           <div className={cn("grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3", view !== "projects" && "hidden")}>
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="aspect-[4/3] rounded-3xl" />

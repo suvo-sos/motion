@@ -1,5 +1,12 @@
 import { useT } from "@agent-native/core/client/i18n";
-import { callAction, useActionMutation, useActionQuery } from "@agent-native/core/client/hooks";
+import {
+  deleteProjectEverywhere,
+  getLocalProject,
+  saveLocalProject,
+  setLocalProjectPinned,
+  syncProjectToServer,
+  useLocalProjects,
+} from "@/lib/local-projects";
 import { OrgSwitcher } from "@agent-native/toolkit/app/org";
 import { openCommandMenu } from "@agent-native/toolkit/app/shared";
 import {
@@ -55,14 +62,9 @@ interface ProjectRow {
 function ProjectsSection({ collapsed }: { collapsed: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const projects = useActionQuery(
-    "list-animations",
-    {},
-    { refetchInterval: 4000 } as any,
-  );
-  const createProject = useActionMutation("save-animation");
+  const { projects } = useLocalProjects();
   const [creating, setCreating] = useState(false);
-  const rows = ((projects.data as any)?.animations ?? []) as ProjectRow[];
+  const rows: ProjectRow[] = projects;
   const activeId =
     location.pathname === "/motion"
       ? new URLSearchParams(location.search).get("id")
@@ -72,17 +74,17 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
     if (creating) return;
     setCreating(true);
     try {
-      const res: any = await createProject.mutateAsync({
+      const res = saveLocalProject({
         title: "Untitled",
         svg: BLANK_SVG,
         tracks: [],
         duration: 2000,
         loop: true,
       });
-      if (res?.id) {
+      if (res.id) {
         // A brand-new project must not inherit the previous chat thread.
         startFreshStudioChat();
-        await projects.refetch();
+        void syncProjectToServer(res.id);
         navigate(`/motion?id=${encodeURIComponent(res.id)}`);
       }
     } catch (error) {
@@ -218,10 +220,7 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
                         <DropdownMenuItem
                           onSelect={async () => {
                             try {
-                              const data: any = await callAction("get-animation", {
-                                id: project.id,
-                              });
-                              const animation = data?.animation;
+                              const animation = getLocalProject(project.id);
                               if (!animation) return;
                               const svg = toAnimatedSvg({
                                 ...animation,
@@ -251,11 +250,7 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
                         <DropdownMenuItem
                           onSelect={async () => {
                             try {
-                              await callAction("pin-animation", {
-                                id: project.id,
-                                pinned: !project.pinned,
-                              });
-                              await projects.refetch();
+                              setLocalProjectPinned(project.id, !project.pinned);
                             } catch (error) {
                               console.error(error);
                             }
@@ -269,10 +264,7 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
                           className="text-destructive focus:text-destructive"
                           onSelect={async () => {
                             try {
-                              await callAction("delete-animation", {
-                                id: project.id,
-                              });
-                              await projects.refetch();
+                              await deleteProjectEverywhere(project.id);
                               if (activeId === project.id) navigate("/home");
                             } catch (error) {
                               console.error(error);

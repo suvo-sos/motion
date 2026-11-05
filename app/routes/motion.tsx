@@ -11,10 +11,7 @@ import {
 import { Link, useSearchParams } from "react-router";
 import { createPortal } from "react-dom";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
-import {
-  useActionQuery,
-  useActionMutation,
-} from "@agent-native/core/client/hooks";
+import { callAction } from "@agent-native/core/client/hooks";
 import { AgentToggleButton } from "@agent-native/toolkit/app/chat";
 import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
 import {
@@ -150,6 +147,14 @@ import {
 } from "../../lib/motion";
 import { runExport, type ExportFormat, type ExportRenderOptions } from "../../lib/export";
 import { sanitizeSvg } from "../../lib/sanitize";
+import {
+  importLocalProject,
+  isServerScratchpadEnabled,
+  saveLocalProject,
+  syncProjectToServerDebounced,
+  useLocalProject,
+  useLocalProjects,
+} from "../lib/local-projects";
 import {
   getMotionEditorActions,
   publishMotionEditor,
@@ -551,32 +556,44 @@ export default function MotionRoute() {
   const [canRedo, setCanRedo] = useState(false);
   const { prompt, dialog: promptDialog } = usePromptDialog();
   const [params, setParams] = useSearchParams();
-  const list = useActionQuery(
-    "list-animations",
-    {},
-    { refetchInterval: 3000 } as any,
-  );
-  const save = useActionMutation("save-animation");
-
-  const animations = ((list.data as any)?.animations ?? []) as Array<{
-    id: string;
-    title: string;
-    duration: number;
-    loop: boolean;
-    updatedAt?: string;
-  }>;
+  const { projects: animations, isLoading: listLoading } = useLocalProjects();
 
   const selectedId = params.get("id") ?? animations[0]?.id ?? null;
+  const localProject = useLocalProject(selectedId);
+  const animation = localProject;
 
-  const detail = useActionQuery(
-    "get-animation",
-    { id: selectedId ?? "" },
-    {
-      enabled: Boolean(selectedId),
-      refetchInterval: 3000,
-    } as any,
-  );
-  const animation = (detail.data as any)?.animation as MotionAnimation | null;
+  // The agent writes new projects to the server scratchpad. When it navigates
+  // to an id we do not have in the browser yet, pull it in once.
+  const [importingFromServer, setImportingFromServer] = useState(false);
+  useEffect(() => {
+    if (
+      !isServerScratchpadEnabled() ||
+      !selectedId ||
+      localProject ||
+      listLoading
+    ) {
+      setImportingFromServer(false);
+      return;
+    }
+    let cancelled = false;
+    setImportingFromServer(true);
+    void (async () => {
+      try {
+        const data: any = await callAction("get-animation", { id: selectedId });
+        const serverAnimation = data?.animation as MotionAnimation | null;
+        if (!cancelled && serverAnimation?.id) {
+          importLocalProject(serverAnimation);
+        }
+      } catch {
+        // Nothing to import; the empty state below handles it.
+      } finally {
+        if (!cancelled) setImportingFromServer(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, localProject, listLoading]);
 
   // Optimistic SVG: static property edits update the artboard immediately while
   // the debounced save travels to the server.
@@ -677,21 +694,21 @@ export default function MotionRoute() {
   }, []);
 
   const createSample = async () => {
-    const res: any = await save.mutateAsync({
+    const res = saveLocalProject({
       title: "Bouncing ball",
       svg: SAMPLE_SVG,
       tracks: SAMPLE_TRACKS,
       duration: 1600,
       loop: true,
     });
-    if (res?.id) {
-      await list.refetch();
+    if (res.id) {
+      void syncProjectToServerDebounced(res.id, 0);
       select(res.id);
     }
   };
 
   const saveAnimation = async (next: MotionAnimation) => {
-    await save.mutateAsync({
+    const saved = saveLocalProject({
       id: next.id,
       title: next.title,
       svg: next.svg,
@@ -699,8 +716,7 @@ export default function MotionRoute() {
       duration: next.duration,
       loop: next.loop,
     });
-    await list.refetch();
-    await detail.refetch();
+    syncProjectToServerDebounced(saved.id);
   };
 
   const handleToggleLock = async (node: TreeNode) => {
@@ -1390,10 +1406,10 @@ export default function MotionRoute() {
       <div className="flex min-w-0 flex-1 flex-col">
         {!selectedId ? (
           <EmptyStudio
-            loading={list.isLoading}
+            loading={listLoading}
             onSample={createSample}
           />
-        ) : detail.isLoading && !animation ? (
+        ) : importingFromServer && !animation ? (
           <>
             <StudioTopBar
               center={<span className="text-[13px] text-muted-foreground">Loading…</span>}
