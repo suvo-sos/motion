@@ -1,5 +1,5 @@
 {
   "buildCommand": "export DATABASE_URL=\"$DATABASE_URL\" && NITRO_PRESET=vercel pnpm build && pnpm migrate:production",
-  "outputDirectory": "dist",
+  "outputDirectory": ".vercel/output",
   "crons": []
 }
