@@ -16,3 +16,8 @@ BETTER_AUTH_TRUSTED_ORIGINS = "https://starter.agent-native.com,https://chat.age
 # Production release migrations own schema setup; request functions must skip
 # migration probes on every serverless invocation.
 AGENT_NATIVE_RELEASE_MIGRATIONS = "1"
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/server"
+  status = 200
