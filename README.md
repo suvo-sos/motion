@@ -52,8 +52,7 @@ deploy with Netlify.
 The project library is stored in the browser, not in Postgres:
 
 - Saved projects live in `localStorage` (`motion-studio-projects:v1`).
-- Auth is disabled by default (and `AUTH_DISABLED=true` is set in Vercel), so
-  there are no accounts or login sessions.
+- Auth is enabled by default. `AUTH_DISABLED` is not set in production.
 - Postgres is only a short-lived scratchpad for the agent. The
   `purge-ephemeral-data` action can delete rows older than 24 hours, but it is
   not scheduled automatically.

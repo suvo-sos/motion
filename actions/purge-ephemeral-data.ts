@@ -51,7 +51,7 @@ export default defineAction({
     // back on, cleanup must not delete a user's work.
 
     // Auth is disabled for the hackathon build, so no session rows are needed.
-    if (process.env.AUTH_DISABLED?.trim().toLowerCase() === "true") {
+    if (process.env.AUTH_DISABLED?.trim().toLowerCase() === "true") { // guard:allow-env-credential — AUTH_DISABLED is a deploy flag, not a credential
       await purge(sql`delete from session`);
     }
 
