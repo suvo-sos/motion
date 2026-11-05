@@ -183,15 +183,28 @@ function AppContent() {
   );
 }
 
+const PUBLIC_PATHS = ["/", "/home", "/motion"];
+
+function isPublicPathname(pathname: string) {
+  return PUBLIC_PATHS.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
+
 export default function Root() {
   const [queryClient] = useState(() => createAgentNativeQueryClient());
   // The path, not the visitor, picks the shell, so the SSR shell stays one
   // cached page per URL.
   const { pathname } = useLocation();
+  // Public studio routes (see server/plugins/auth.ts) render without a
+  // session, so visitors never hit the sign-in card there. Every other
+  // route still goes through RequireSession.
+  const isPublicPath = isPublicPathname(pathname);
   return (
     <AppToolkitProvider>
       <AppProviders
         queryClient={queryClient}
+        isPublicPath={isPublicPath}
         skeletonLayout={skeletonLayoutForPath(pathname)}
         i18n={{ catalog: i18nCatalog }}
       >
