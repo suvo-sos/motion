@@ -17,10 +17,6 @@ An agent-native SVG animation studio where you describe motion and the agent cre
 - Real-time Sync: Changes sync instantly across all sessions
 - Auto-save: All projects saved automatically
 
-## Demo
-
-- Live demo: https://motion-studio-34xsq2l04-wero5.vercel.app/
-- Public Clips recording: (add public Clips link here — must be viewable without login)
 
 ## Run this project
 
