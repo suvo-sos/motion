@@ -14,8 +14,8 @@ changes stay in sync between chat and the studio.
 
 ## Creator / team
 
-- Name(s): (add)
-- Contact: (add email)
+- Name(s): suvo
+- Contact: suvo.uio@gmail.com
 
 ## How to run locally
 
