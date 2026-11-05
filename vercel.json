@@ -1,4 +1,4 @@
 {
-  "buildCommand": "export DATABASE_URL=\"$DATABASE_URL\" && NITRO_PRESET=vercel pnpm build && node -e \"const fs=require('fs');const p='.vercel/output/config.json';const c=JSON.parse(fs.readFileSync(p));delete c.crons;fs.writeFileSync(p,JSON.stringify(c,null,2));\" && pnpm migrate:production",
+  "buildCommand": "export DATABASE_URL=\"$DATABASE_URL\" && NITRO_PRESET=vercel pnpm build && node scripts/strip-vercel-cron.js && pnpm migrate:production",
   "outputDirectory": ".vercel/output"
 }
