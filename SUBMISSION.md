@@ -65,4 +65,3 @@ straight to the project launcher.
   set or `BETTER_AUTH_SECRET`/a persistent database URL is missing. For a
   production deployment, unset `AUTH_DISABLED`, set `BETTER_AUTH_SECRET`, and
   provide `DATABASE_URL`/`NETLIFY_DATABASE_URL`.
-- `.kiro/` contains local specs and is intentionally excluded from the repo.
