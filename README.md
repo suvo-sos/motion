@@ -34,13 +34,14 @@ already available, connect an AI provider in Settings → Agent.
 
 ## Production
 
-Production needs a persistent Postgres database and auth secrets:
+Production needs a persistent Postgres database:
 
 ```bash
 DATABASE_URL=postgres://...
-BETTER_AUTH_SECRET=<output of: openssl rand -hex 32>
-# Do not set AUTH_DISABLED in production.
 ```
+
+Auth is disabled for this hackathon build. Set `BETTER_AUTH_SECRET` only if you
+re-enable auth later.
 
 `netlify.toml` maps `NETLIFY_DATABASE_URL` to `DATABASE_URL` and runs
 migrations on production deploys. Then run `pnpm build` and `pnpm start`, or
