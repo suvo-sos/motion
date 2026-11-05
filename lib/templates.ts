@@ -1029,46 +1029,6 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
       { target: "dot-2", property: "translateY", keyframes: [{ t: 0, v: -6, ease: easeInOut }, { t: 0.5, v: 4, ease: easeInOut }, { t: 1, v: -6 }] },
     ],
   },
-  {
-    id: "dog-painting",
-    label: "Dog painting",
-    hint: "A line-art dog drawn on, then a wagging tail.",
-    icon: "ball",
-    duration: 3000,
-    loop: true,
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
-  <path id="dog-body" d="M60 150 Q60 90 110 80 Q150 70 170 100 Q185 125 175 150 Q150 175 110 175 Q75 175 60 150 Z" stroke="#7C3AED" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" pathLength="1" stroke-dasharray="1"/>
-  <circle id="dog-eye" cx="125" cy="105" r="4" fill="#7C3AED"/>
-  <path id="dog-ear" d="M95 85 Q80 60 100 70" stroke="#7C3AED" stroke-width="4" stroke-linecap="round" fill="none"/>
-  <path id="dog-tail" d="M175 145 Q200 120 195 100" stroke="#7C3AED" stroke-width="4" stroke-linecap="round" fill="none"/>
-</svg>`,
-    tracks: [
-      { target: "dog-body", property: "strokeDashoffset", keyframes: [{ t: 0, v: 1, ease: easeOut }, { t: 0.5, v: 0 }, { t: 1, v: 0 }] },
-      { target: "dog-tail", property: "rotate", keyframes: [{ t: 0, v: -12, ease: easeInOut }, { t: 0.25, v: 12, ease: easeInOut }, { t: 0.5, v: -12, ease: easeInOut }, { t: 0.75, v: 12, ease: easeInOut }, { t: 1, v: -12 }] },
-      { target: "dog-ear", property: "rotate", keyframes: [{ t: 0, v: 0, ease: easeInOut }, { t: 0.5, v: -8, ease: easeInOut }, { t: 1, v: 0 }] },
-    ],
-  },
-  {
-    id: "sorry-text",
-    label: "Sorry",
-    hint: "A gentle apology with a soft shake and fade.",
-    icon: "heart",
-    duration: 2000,
-    loop: false,
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
-  <circle id="sorry-bg" cx="120" cy="120" r="70" fill="#FEE2E2"/>
-  <text id="sorry-text" x="120" y="135" text-anchor="middle" font-size="40" font-weight="800" fill="#DC2626">Sorry</text>
-  <path id="sorry-face" d="M95 160 Q120 145 145 160" stroke="#DC2626" stroke-width="3" stroke-linecap="round" fill="none"/>
-  <circle id="sorry-eye-l" cx="105" cy="115" r="4" fill="#DC2626"/>
-  <circle id="sorry-eye-r" cx="135" cy="115" r="4" fill="#DC2626"/>
-</svg>`,
-    tracks: [
-      { target: "sorry-bg", property: "scale", keyframes: [{ t: 0, v: 0.7, ease: easeBack }, { t: 0.3, v: 1.05, ease: easeOut }, { t: 0.5, v: 1 }, { t: 1, v: 1 }] },
-      { target: "sorry-text", property: "opacity", keyframes: [{ t: 0, v: 0, ease: easeOut }, { t: 0.25, v: 1 }, { t: 1, v: 1 }] },
-      { target: "sorry-text", property: "scale", keyframes: [{ t: 0, v: 0.8, ease: easeBack }, { t: 0.3, v: 1.05, ease: easeOut }, { t: 0.5, v: 1 }, { t: 1, v: 1 }] },
-      { target: "sorry-text", property: "rotate", keyframes: [{ t: 0, v: 0 }, { t: 0.6, v: -4, ease: easeInOut }, { t: 0.7, v: 4, ease: easeInOut }, { t: 0.8, v: -3, ease: easeInOut }, { t: 0.9, v: 3, ease: easeInOut }, { t: 1, v: 0 }] },
-    ],
-  },
 ];
 
 export function findTemplate(id: string): MotionTemplate | undefined {
