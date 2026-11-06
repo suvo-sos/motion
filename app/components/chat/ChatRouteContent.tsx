@@ -410,7 +410,7 @@ function ChatThreadRouteContent({
       <aside
         data-agent-chat-workspace-panel=""
         data-state={workspaceOpen ? "open" : "closed"}
-        aria-hidden={workspaceOpen ? undefined : true}
+        
         inert={workspaceOpen ? undefined : true}
         className="agent-kit-workspace-panel absolute end-0 flex flex-col border-s border-border bg-background shadow-lg md:shadow-none"
       >
