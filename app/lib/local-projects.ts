@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import type { MotionAnimation, Track } from "../../lib/motion";
+import type { HoverEffect, MotionAnimation, Track } from "../../lib/motion";
 import { sanitizeSvg } from "../../lib/sanitize";
 
 /**
@@ -22,6 +22,7 @@ export interface SaveLocalProjectInput {
   title: string;
   svg: string;
   tracks: Track[];
+  hover?: Record<string, HoverEffect> | undefined;
   duration: number;
   loop: boolean;
 }
@@ -230,6 +231,10 @@ export function saveLocalProject(input: SaveLocalProjectInput): {
     title: input.title.trim() || "Untitled animation",
     svg,
     tracks: input.tracks,
+    // Keep the existing hover effects when the caller does not carry
+    // them — otherwise any plain attribute edit would silently wipe
+    // the hover settings. An explicit value (including {}) wins.
+    hover: input.hover ?? existing?.hover,
     duration: input.duration,
     loop: input.loop,
     pinned: existing?.pinned ?? false,
@@ -282,12 +287,40 @@ export function importLocalProject(animation: MotionAnimation & {
     return;
   }
 
+  // Same content, only the timestamp moved: the studio mirror writes the
+  // same document back to the server, which bumps updatedAt, so the next
+  // refresh would rewrite the local copy for no reason — and that rewrite
+  // re-renders the studio and feeds another save/mirror round. A server
+  // that keeps moving also makes every agent save go stale, so the agent
+  // can never land an edit while the studio is open. Skip the rewrite
+  // when nothing actually changed.
+  if (existing) {
+    const incomingSvg = sanitizeSvg(animation.svg ?? "");
+    const incomingTracks = Array.isArray(animation.tracks)
+      ? animation.tracks
+      : [];
+    if (
+      existing.title === (animation.title || "Untitled animation") &&
+      existing.svg === incomingSvg &&
+      JSON.stringify(existing.tracks) === JSON.stringify(incomingTracks) &&
+      JSON.stringify(existing.hover ?? {}) ===
+        JSON.stringify(animation.hover ?? {}) &&
+      (existing.duration ?? 2000) === (animation.duration ?? 2000) &&
+      (existing.loop ?? true) === (animation.loop ?? true)
+    ) {
+      return;
+    }
+  }
+
   const now = new Date().toISOString();
   const next: LocalProject = {
     id: animation.id,
     title: animation.title || "Untitled animation",
     svg: sanitizeSvg(animation.svg ?? ""),
     tracks: Array.isArray(animation.tracks) ? animation.tracks : [],
+    // A server copy without hover (an older row, or an agent edit that
+    // did not touch hover) must not wipe the local hover effects.
+    hover: animation.hover ?? existing?.hover,
     duration: animation.duration ?? 2000,
     loop: animation.loop ?? true,
     pinned: existing?.pinned ?? animation.pinned ?? false,
@@ -312,11 +345,29 @@ export async function syncProjectToServer(id: string): Promise<void> {
   if (!project) return;
   try {
     const { callAction } = await import("@agent-native/core/client/hooks");
+    // Do not overwrite a server copy that moved since the local save: the
+    // agent may have patched it while the user was editing, and a blind
+    // mirror would wipe that patch before the refresh ever shows it. Skip
+    // this round — the refresh brings the server changes in, and the next
+    // local save mirrors the merged copy.
+    try {
+      const data: any = await callAction("get-animation", { id: project.id });
+      const server = data?.animation as { updatedAt?: string } | null;
+      if (
+        server?.updatedAt &&
+        Date.parse(server.updatedAt) > Date.parse(project.updatedAt)
+      ) {
+        return;
+      }
+    } catch {
+      // A failed read must not block the mirror; fall through and save.
+    }
     await callAction("save-animation", {
       id: project.id,
       title: project.title,
       svg: project.svg,
       tracks: project.tracks,
+      hover: project.hover,
       duration: project.duration,
       loop: project.loop,
     });

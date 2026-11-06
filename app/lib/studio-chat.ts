@@ -1,3 +1,5 @@
+import { clearLastChatThread } from "./chat-home-thread";
+
 /**
  * Opening a project is a fresh start, not a resumption. The agent sidebar
  * remembers the last thread it showed in this browser tab, so without a reset
@@ -24,6 +26,11 @@ function isSidebarStorageKey(key: string): boolean {
 /** Start the studio with no previous conversation in the agent sidebar. */
 export function startFreshStudioChat(): void {
   if (typeof window === "undefined") return;
+
+  // A fresh studio chat also ends any pending home handoff — otherwise the
+  // handoff (which lives 10 minutes) would claim this project for the
+  // previous home conversation.
+  clearLastChatThread();
 
   try {
     const stale: string[] = [];

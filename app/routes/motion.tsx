@@ -137,9 +137,11 @@ import {
 } from "@/components/ui/popover";
 import {
   applyAt,
+  hoverEffectsCss,
   PROPERTY_DEFINITIONS,
   PROPERTY_GROUPS,
   sampleTrack,
+  type HoverEffect,
   type Keyframe,
   type MotionAnimation,
   type Property,
@@ -155,7 +157,7 @@ import {
   useLocalProject,
   useLocalProjects,
 } from "../lib/local-projects";
-import { readLastChatThread } from "../lib/chat-home-thread";
+import { clearLastChatThread, readLastChatThread } from "../lib/chat-home-thread";
 import {
   getProjectChatThread,
   isProjectChatThreadAlive,
@@ -695,16 +697,26 @@ export default function MotionRoute() {
     const prevId = prevSelectedIdRef.current;
     prevSelectedIdRef.current = selectedId;
     if (!selectedId) return;
-    // Handoff wins: the home composer just built this project in the thread
-    // the sidebar is showing right now. Record it as this project's thread
-    // instead of switching away from it.
+    // Handoff: the home composer just built this project in its thread.
+    // If this project has no chat yet, point the sidebar at the handoff
+    // thread and record it — do not wait for the sidebar pointer to catch
+    // up (it usually still shows the previous project when the studio
+    // mounts). Every other way into the studio (templates, uploads, New
+    // project, project cards) clears the handoff first, so a handoff here
+    // can only mean the home composer just built this project — or the
+    // same agent run just built another one in the same thread.
     const handoffThreadId = readLastChatThread();
-    if (
-      handoffThreadId &&
-      handoffThreadId === readActiveSidebarThread()
-    ) {
+    if (handoffThreadId && !getProjectChatThread(selectedId)) {
       setProjectChatThread(selectedId, handoffThreadId);
-      return;
+      projectChatSwitchUntilRef.current = Date.now() + 3000;
+      openProjectChatThread(handoffThreadId);
+      // The sidebar panel is lazy-loaded; replay once in case it was not
+      // listening yet. Duplicate opens of the same thread are ignored.
+      const handoffRetryTimer = window.setTimeout(
+        () => openProjectChatThread(handoffThreadId),
+        500,
+      );
+      return () => window.clearTimeout(handoffRetryTimer);
     }
     // Save the thread we are leaving under the project we are leaving.
     if (prevId && prevId !== selectedId) {
@@ -726,6 +738,9 @@ export default function MotionRoute() {
           return;
         }
         if (cancelled) return;
+        // Refresh the guard now that the switch is actually happening —
+        // the liveness check above can take longer than the 3s guard.
+        projectChatSwitchUntilRef.current = Date.now() + 3000;
         openProjectChatThread(mapped);
         // The sidebar panel is lazy-loaded; replay once in case it was not
         // listening yet. Duplicate opens of the same thread are ignored.
@@ -747,8 +762,19 @@ export default function MotionRoute() {
   useEffect(() => {
     if (!selectedId) return;
     const record = () => {
-      if (Date.now() < projectChatSwitchUntilRef.current) return;
       const active = readActiveSidebarThread();
+      // A handoff is a one-time message: once the sidebar is showing it
+      // and this project is mapped to it, forget it. Left alone it lives
+      // 10 minutes and would claim every project opened after it.
+      const handoff = readLastChatThread();
+      if (
+        handoff &&
+        active === handoff &&
+        getProjectChatThread(selectedId) === handoff
+      ) {
+        clearLastChatThread();
+      }
+      if (Date.now() < projectChatSwitchUntilRef.current) return;
       if (!active) return;
       if (getProjectChatThread(selectedId) === active) return;
       setProjectChatThread(selectedId, active);
@@ -886,6 +912,7 @@ export default function MotionRoute() {
         title: next.title,
         svg: next.svg,
         tracks: next.tracks,
+        hover: next.hover,
         duration: next.duration,
         loop: next.loop,
       });
@@ -2843,6 +2870,7 @@ function PropertiesPanel({
       "appearance",
       "filters",
       "attributes",
+      "hover",
     ])
   );
   const [localAttributes, setLocalAttributes] = useState<Record<string, string>>({});
@@ -2995,6 +3023,51 @@ function PropertiesPanel({
         el.setAttribute(attrName, value);
       }
     });
+  };
+
+  // Hover effect for the selected element, if one is set.
+  const currentHover: HoverEffect | null =
+    selectedElementId ? (animation?.hover?.[selectedElementId] ?? null) : null;
+
+  // Hover effects live on the animation object (keyed by element id),
+  // not in the SVG string, so they are saved through onSave directly —
+  // the panel's scheduleSave only writes the svg. The ref is updated
+  // here too, or a later attribute save would drop the hover change.
+  const saveHover = useCallback(
+    (next: HoverEffect | null) => {
+      const latest = latestAnimationRef.current;
+      if (!latest || !selectedElementId) return;
+      const nextHover = { ...(latest.hover ?? {}) };
+      if (next) nextHover[selectedElementId] = next;
+      else delete nextHover[selectedElementId];
+      const updated: MotionAnimation = { ...latest, hover: nextHover };
+      latestAnimationRef.current = updated;
+      void Promise.resolve(onSave(updated)).catch((err) => {
+        console.error("Failed to save animation", err);
+        toast.error("Couldn't save your changes. Try again.");
+      });
+    },
+    [selectedElementId, onSave],
+  );
+
+  // Switching effect keeps the previous duration and, where the setting
+  // means the same thing, the previous value; otherwise a sensible default.
+  const hoverEffectWithDefaults = (
+    effect: HoverEffect["effect"],
+    prev: HoverEffect | null,
+  ): HoverEffect => {
+    const next: HoverEffect = { effect, durationMs: prev?.durationMs ?? 250 };
+    if (effect === "scale")
+      next.amount = prev?.effect === "scale" ? (prev.amount ?? 1.15) : 1.15;
+    if (effect === "rotate")
+      next.amount = prev?.effect === "rotate" ? (prev.amount ?? 15) : 15;
+    if (effect === "lift")
+      next.amount = prev?.effect === "lift" ? (prev.amount ?? -10) : -10;
+    if (effect === "bounce")
+      next.amount = prev?.effect === "bounce" ? (prev.amount ?? 12) : 12;
+    if (effect === "color" || effect === "glow")
+      next.color = prev?.color ?? "#2391FF";
+    return next;
   };
 
   // Gradient state for the selected element, read from the document's defs.
@@ -3940,6 +4013,121 @@ function PropertiesPanel({
             {Object.keys(attrs).length === 0 ? (
               <p className="text-xs text-muted-foreground">No attributes.</p>
             ) : null}
+          </div>
+        </PropertySection>
+
+        {/* Hover Section: this element animates when the pointer is over it */}
+        <PropertySection
+          title="Hover"
+          icon={<IconPointerFilled className="size-4" />}
+          isExpanded={expanded.has("hover")}
+          onToggle={() => toggleSection("hover")}
+        >
+          <div className="space-y-3">
+            <PropertySelect
+              label="Effect"
+              value={
+                !currentHover
+                  ? "None"
+                  : currentHover.effect === "scale"
+                    ? "Grow"
+                    : currentHover.effect === "color"
+                      ? "Colour"
+                      : currentHover.effect === "rotate"
+                        ? "Spin"
+                        : currentHover.effect === "bounce"
+                          ? "Bounce"
+                          : currentHover.effect === "glow"
+                            ? "Glow"
+                            : "Lift"
+              }
+              options={["None", "Grow", "Colour", "Spin", "Bounce", "Glow", "Lift"]}
+              onChange={(v) => {
+                if (v === "None") {
+                  saveHover(null);
+                  return;
+                }
+                const effect =
+                  v === "Grow"
+                    ? "scale"
+                    : v === "Colour"
+                      ? "color"
+                      : v === "Spin"
+                        ? "rotate"
+                        : v === "Bounce"
+                          ? "bounce"
+                          : v === "Glow"
+                            ? "glow"
+                            : "lift";
+                saveHover(hoverEffectWithDefaults(effect, currentHover));
+              }}
+            />
+            {currentHover ? (
+              <PropertySlider
+                label="Duration"
+                value={currentHover.durationMs ?? 250}
+                onChange={(v) => saveHover({ ...currentHover, durationMs: v })}
+                min={100}
+                max={1000}
+                unit="ms"
+              />
+            ) : null}
+            {currentHover?.effect === "scale" ? (
+              <PropertySlider
+                label="Grow to"
+                value={Math.round((currentHover.amount ?? 1.15) * 100)}
+                onChange={(v) => saveHover({ ...currentHover, amount: v / 100 })}
+                min={105}
+                max={150}
+                unit="%"
+              />
+            ) : null}
+            {currentHover?.effect === "rotate" ? (
+              <PropertySlider
+                label="Turn"
+                value={currentHover.amount ?? 15}
+                onChange={(v) => saveHover({ ...currentHover, amount: v })}
+                min={-180}
+                max={180}
+                unit="°"
+              />
+            ) : null}
+            {currentHover?.effect === "lift" || currentHover?.effect === "bounce" ? (
+              <PropertySlider
+                label={currentHover.effect === "lift" ? "Lift by" : "Bounce height"}
+                value={Math.abs(
+                  currentHover.amount ?? (currentHover.effect === "lift" ? -10 : 12),
+                )}
+                onChange={(v) =>
+                  saveHover({
+                    ...currentHover,
+                    amount: currentHover.effect === "lift" ? -v : v,
+                  })
+                }
+                min={2}
+                max={40}
+                unit="px"
+              />
+            ) : null}
+            {currentHover?.effect === "color" ? (
+              <PropertyColorField
+                label="Hover colour"
+                value={currentHover.color ?? "#2391FF"}
+                onChange={(v) => saveHover({ ...currentHover, color: v })}
+                documentColors={documentColors}
+              />
+            ) : null}
+            {currentHover?.effect === "glow" ? (
+              <PropertyColorField
+                label="Glow colour"
+                value={currentHover.color ?? "#2391FF"}
+                onChange={(v) => saveHover({ ...currentHover, color: v })}
+                documentColors={documentColors}
+              />
+            ) : null}
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              Plays when the pointer hovers this element — on the canvas and in the exported SVG.
+            </p>
           </div>
         </PropertySection>
 
@@ -8714,6 +8902,17 @@ function StudioWorkspace({
     unitsPerPx: number;
     mirror?: { anchorIndex: number; oppositeIndex: number } | null;
   } | null>(null);
+  // Live readout while a node is being dragged: the dragged point's
+  // position and delta, plus the x/y it snapped to (if any) — so the
+  // movement can be checked by eye instead of guessed.
+  const [nodeDragInfo, setNodeDragInfo] = useState<{
+    index: number;
+    x: number;
+    y: number;
+    dx: number;
+    dy: number;
+  } | null>(null);
+  const [nodeGuides, setNodeGuides] = useState<{ x?: number; y?: number }>({});
 
   useEffect(() => {
     if (nodeSmoothForRef.current !== selectedElementId) {
@@ -8884,6 +9083,17 @@ function StudioWorkspace({
     }
   }, [nodeTag, nodePoints, animation?.svg, selectedElementId]);
 
+  // Artboard bounds for the node overlay, so the drag guides can span the
+  // whole canvas. Same parse as the overlay viewBox below.
+  const nodeViewBox = useMemo(() => {
+    const vb = (animation?.svg ?? "").match(
+      /viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i,
+    );
+    return vb
+      ? { x: Number(vb[1]), y: Number(vb[2]), w: Number(vb[3]), h: Number(vb[4]) }
+      : { x: 0, y: 0, w: 200, h: 200 };
+  }, [animation?.svg]);
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const drag = nodeDragRef.current;
@@ -8894,6 +9104,37 @@ function StudioWorkspace({
       const unitsPerPx = ctm && ctm.a ? 1 / ctm.a : drag.unitsPerPx;
       const dx = (e.clientX - drag.startX) * unitsPerPx;
       const dy = (e.clientY - drag.startY) * unitsPerPx;
+      // Snap the dragged point to a nearby node's x or y (5 screen px),
+      // so it lines up exactly; the readout and guides below show it.
+      const initPt = drag.initPoints[drag.index];
+      const snapTol = 5 * unitsPerPx;
+      let snapX = initPt ? initPt.x + dx : 0;
+      let snapY = initPt ? initPt.y + dy : 0;
+      const guides: { x?: number; y?: number } = {};
+      for (let k = 0; k < drag.initPoints.length; k++) {
+        if (k === drag.index) continue;
+        if (drag.mirror && k === drag.mirror.oppositeIndex) continue;
+        const q = drag.initPoints[k];
+        if (!q) continue;
+        if (guides.x === undefined && Math.abs(q.x - snapX) < snapTol) {
+          snapX = q.x;
+          guides.x = q.x;
+        }
+        if (guides.y === undefined && Math.abs(q.y - snapY) < snapTol) {
+          snapY = q.y;
+          guides.y = q.y;
+        }
+      }
+      setNodeGuides(guides);
+      if (initPt) {
+        setNodeDragInfo({
+          index: drag.index,
+          x: snapX,
+          y: snapY,
+          dx: snapX - initPt.x,
+          dy: snapY - initPt.y,
+        });
+      }
       // Dragging a circle/ellipse centre moves the whole shape, so its
       // edge points must move with it — otherwise moving the centre would
       // silently change the radius instead.
@@ -8902,6 +9143,7 @@ function StudioWorkspace({
       setNodePoints((prev) => {
         const next = prev.map((p, i) => {
           if (!moveAll && i !== drag.index) return p;
+          if (i === drag.index) return { x: snapX, y: snapY };
           const init = drag.initPoints[i] ?? p;
           return { x: init.x + dx, y: init.y + dy };
         });
@@ -8929,6 +9171,8 @@ function StudioWorkspace({
           return prev;
         });
       }
+      setNodeDragInfo(null);
+      setNodeGuides({});
       nodeDragRef.current = null;
     };
     window.addEventListener("pointermove", onMove);
@@ -10134,7 +10378,15 @@ function StudioWorkspace({
                     const h = heightMatch ? heightMatch[1] : '200';
                     cleanSvg = cleanSvg.replace(/<svg/, `<svg viewBox="0 0 ${w} ${h}"`);
                   }
-                  
+
+                  // Hover effects: the preview animates on hover exactly
+                  // like the export does. Injected after sanitising, so
+                  // it never gets saved into the artwork itself.
+                  const hoverCss = hoverEffectsCss(animation.hover);
+                  if (hoverCss) {
+                    cleanSvg = cleanSvg.replace("</svg>", `<style>${hoverCss}</style></svg>`);
+                  }
+
                   return cleanSvg;
                 })()
               }}
@@ -10333,13 +10585,7 @@ function StudioWorkspace({
                 width="100%"
                 height="100%"
                 preserveAspectRatio="none"
-                viewBox={(() => {
-                  const vb = (animation.svg ?? "")
-                    .match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s+([\d.eE+]+)\s+([\d.eE+]+)\s*["']/i);
-                  return vb
-                    ? `${vb[1]} ${vb[2]} ${vb[3]} ${vb[4]}`
-                    : "0 0 200 200";
-                })()}
+                viewBox={`${nodeViewBox.x} ${nodeViewBox.y} ${nodeViewBox.w} ${nodeViewBox.h}`}
               >
                 {nodeBezier ? (
                   nodeBezier.lines.map((l, li) => (
@@ -10505,6 +10751,57 @@ function StudioWorkspace({
                     )}
                   </g>
                 ))}
+                {/* While a node is dragged: a dashed crosshair through it
+                    spanning the whole artboard, solid lines where it
+                    snapped to another node's x/y, and a live readout of
+                    its position, delta, and (for a bezier handle) its
+                    length and angle from its anchor. All thin and
+                    screen-constant, like the rest of the node chrome. */}
+                {nodeDragInfo ? (
+                  <g className="pointer-events-none">
+                    <line x1={nodeViewBox.x} y1={nodeDragInfo.y} x2={nodeViewBox.x + nodeViewBox.w} y2={nodeDragInfo.y} stroke="#2391FF" stroke-width={nodeU} stroke-dasharray={`${3 * nodeU} ${3 * nodeU}`} vector-effect="non-scaling-stroke" opacity="0.45" />
+                    <line x1={nodeDragInfo.x} y1={nodeViewBox.y} x2={nodeDragInfo.x} y2={nodeViewBox.y + nodeViewBox.h} stroke="#2391FF" stroke-width={nodeU} stroke-dasharray={`${3 * nodeU} ${3 * nodeU}`} vector-effect="non-scaling-stroke" opacity="0.45" />
+                    {nodeGuides.x !== undefined ? (
+                      <line x1={nodeGuides.x} y1={nodeViewBox.y} x2={nodeGuides.x} y2={nodeViewBox.y + nodeViewBox.h} stroke="#2391FF" stroke-width={nodeU} vector-effect="non-scaling-stroke" opacity="0.9" />
+                    ) : null}
+                    {nodeGuides.y !== undefined ? (
+                      <line x1={nodeViewBox.x} y1={nodeGuides.y} x2={nodeViewBox.x + nodeViewBox.w} y2={nodeGuides.y} stroke="#2391FF" stroke-width={nodeU} vector-effect="non-scaling-stroke" opacity="0.9" />
+                    ) : null}
+                    {(() => {
+                      const fmt = (v: number) => (Math.round(v * 10) / 10).toFixed(1);
+                      const lines = [
+                        `x ${fmt(nodeDragInfo.x)}  y ${fmt(nodeDragInfo.y)}`,
+                        `dx ${nodeDragInfo.dx >= 0 ? "+" : ""}${fmt(nodeDragInfo.dx)}  dy ${nodeDragInfo.dy >= 0 ? "+" : ""}${fmt(nodeDragInfo.dy)}`,
+                      ];
+                      const anchorIdx = nodeBezier?.anchorOfControl.get(nodeDragInfo.index);
+                      if (anchorIdx !== undefined) {
+                        const anchor = nodePoints[anchorIdx];
+                        if (anchor) {
+                          const len = Math.hypot(nodeDragInfo.x - anchor.x, nodeDragInfo.y - anchor.y);
+                          const ang = (Math.atan2(nodeDragInfo.y - anchor.y, nodeDragInfo.x - anchor.x) * 180) / Math.PI;
+                          lines.push(`len ${fmt(len)}  ∠ ${fmt(ang)}°`);
+                        }
+                      }
+                      const fs = 11 * nodeU;
+                      const lh = 14 * nodeU;
+                      const pad = 6 * nodeU;
+                      const w = Math.max(...lines.map((s) => s.length)) * 6.6 * nodeU + pad * 2;
+                      const h = lines.length * lh + pad * 2;
+                      let lx = nodeDragInfo.x + 14 * nodeU;
+                      let ly = nodeDragInfo.y - 14 * nodeU - h;
+                      if (lx + w > nodeViewBox.x + nodeViewBox.w) lx = nodeDragInfo.x - 14 * nodeU - w;
+                      if (ly < nodeViewBox.y) ly = nodeDragInfo.y + 14 * nodeU;
+                      return (
+                        <g>
+                          <rect x={lx} y={ly} width={w} height={h} rx={4 * nodeU} fill="#111827" fill-opacity="0.92" stroke="#2391FF" stroke-width={nodeU} vector-effect="non-scaling-stroke" />
+                          {lines.map((s, li) => (
+                            <text key={li} x={lx + pad} y={ly + pad + fs + li * lh} font-size={fs} font-family="monospace" fill="#ffffff">{s}</text>
+                          ))}
+                        </g>
+                      );
+                    })()}
+                  </g>
+                ) : null}
               </svg>
             ) : null}
             <style>{`

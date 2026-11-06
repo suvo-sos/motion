@@ -45,15 +45,46 @@ const trackSchema = z.object({
   keyframes: z.array(keyframeSchema).min(1),
 });
 
+const hoverSchema = z.object({
+  effect: z
+    .enum(["scale", "color", "rotate", "bounce", "glow", "lift"])
+    .describe(
+      "Hover effect: scale (grow), color (change fill), rotate (spin), bounce, glow, or lift (rise up)",
+    ),
+  durationMs: z
+    .number()
+    .int()
+    .min(50)
+    .max(2000)
+    .optional()
+    .describe("Duration of the hover transition (or one bounce cycle) in ms"),
+  color: z
+    .string()
+    .optional()
+    .describe("Hex colour for the color effect (target fill) or glow effect"),
+  amount: z
+    .number()
+    .optional()
+    .describe(
+      "Strength: scale factor for scale, degrees for rotate, px for lift/bounce",
+    ),
+});
+
 export default defineAction({
   description:
-    "Create or update an SVG motion animation. Provide the raw SVG markup, a title, a duration in ms, loop flag, and tracks (one per animated property per element). Each track targets an SVG element id and has keyframes with normalized time (0-1) and values.",
+    "Create or update an SVG. What you make depends on what the user asked for. By default make a STATIC svg: pass tracks: [] and leave hover out — a still image, no motion. Only add tracks (animation) when the user asks for animation, motion, movement, or a moving/animated svg. Only add hover when the user asks for hover or interactive-on-hover behaviour: hover maps an SVG element id to one effect — scale (grow), color (change fill), rotate (spin), bounce, glow, or lift — with durationMs and, for scale/rotate/lift/bounce, an amount, and for color/glow a hex color. Provide the raw SVG markup, a title, a duration in ms, loop flag, and tracks (one per animated property per element). Each track targets an SVG element id and has keyframes with normalized time (0-1) and values.",
   mcpTool: true,
   schema: z.object({
     id: z.string().optional().describe("Existing animation id to update"),
     title: z.string().default("Untitled animation"),
     svg: z.string().describe("Raw SVG markup. Give animated elements stable ids."),
     tracks: z.array(trackSchema).default([]),
+    hover: z
+      .record(z.string(), hoverSchema)
+      .optional()
+      .describe(
+        "Hover effects, keyed by SVG element id. Only when the user asks for hover/interactive behaviour. Omit it entirely when updating an animation whose hover effects should stay as they are.",
+      ),
     duration: z.number().int().min(100).max(60000).default(2000).describe("Duration in ms"),
     loop: z.boolean().default(true),
     expectedUpdatedAt: z
@@ -64,7 +95,7 @@ export default defineAction({
       ),
   }),
   http: { method: "POST" },
-  run: async ({ id, title, svg, tracks, duration, loop, expectedUpdatedAt }, ctx) => {
+  run: async ({ id, title, svg, tracks, hover, duration, loop, expectedUpdatedAt }, ctx) => {
     const db = getDb();
     const now = new Date().toISOString();
 
@@ -100,6 +131,7 @@ export default defineAction({
           title,
           svg,
           tracks: JSON.stringify(tracks),
+          hover: JSON.stringify(hover ?? {}),
           duration,
           loop,
           ownerEmail: ctx?.userEmail ?? null,
@@ -126,6 +158,10 @@ export default defineAction({
           title,
           svg,
           tracks: JSON.stringify(tracks),
+          // Omit hover when the caller did not pass it, so an edit that
+          // only changes the artwork or tracks never wipes the hover
+          // effects the user set in the studio.
+          ...(hover !== undefined ? { hover: JSON.stringify(hover) } : {}),
           duration,
           loop,
           updatedAt: now,
@@ -140,6 +176,7 @@ export default defineAction({
       title,
       svg,
       tracks: JSON.stringify(tracks),
+      hover: JSON.stringify(hover ?? {}),
       duration,
       loop,
       ownerEmail: ctx?.userEmail ?? null,

@@ -33,7 +33,8 @@ import { Link, useNavigate } from "react-router";
 import { Button } from "@/components/ui/button";
 import { AppMark } from "@/components/brand/AppMark";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getChatHomeThreadId, rememberLastChatThread } from "@/lib/chat-home-thread";
+import { createFreshChatHomeThreadId, getChatHomeThreadId, rememberLastChatThread } from "@/lib/chat-home-thread";
+import { getProjectForChatThread } from "@/lib/project-chats";
 import { startFreshStudioChat } from "@/lib/studio-chat";
 import { cn } from "@/lib/utils";
 import {
@@ -156,7 +157,13 @@ interface ProjectSummary extends MotionAnimation {
 
 export default function HomePage() {
   const navigate = useNavigate();
-  const [threadId] = useState(getChatHomeThreadId);
+  const [threadId] = useState(() => {
+    const id = getChatHomeThreadId();
+    // A home thread that already built a project belongs to that project.
+    // A new prompt from home is a new project, so it starts on a fresh
+    // thread instead of continuing the previous project's conversation.
+    return getProjectForChatThread(id) ? createFreshChatHomeThreadId() : id;
+  });
   const [uploading, setUploading] = useState(false);
   const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
   const [view, setView] = useState<"projects" | "templates">("templates");

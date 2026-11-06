@@ -47,6 +47,8 @@ export default defineAction({
         ...row,
         svg,
         tracks: JSON.parse(row.tracks || "[]"),
+        // Rows written before the hover column existed have no value.
+        hover: JSON.parse((row as { hover?: string }).hover || "{}"),
       },
     };
   },

@@ -127,3 +127,42 @@ export function readLastChatThread(): string | null {
   return null;
 }
 
+/**
+ * Forget the handoff. A handoff is a one-time message: once the studio has
+ * opened the thread it names, it must not linger — left alone it lives 10
+ * minutes and would claim every project opened after it.
+ */
+export function clearLastChatThread(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(LAST_CHAT_THREAD_STORAGE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
+/**
+ * Mint a brand-new home thread id (a new conversation). Used when the
+ * stored home thread already built a project: a new prompt from home is a
+ * new project, so it starts on a fresh thread instead of continuing the
+ * previous project's conversation.
+ */
+export function createFreshChatHomeThreadId(): string {
+  const id = createChatThreadId();
+  markClientDraftThread(id);
+  if (typeof window !== "undefined") {
+    try {
+      window.sessionStorage.setItem(
+        CHAT_HOME_THREAD_STORAGE_KEY,
+        JSON.stringify({
+          id,
+          issuedAt: Date.now(),
+        } satisfies PendingChatHomeThread),
+      );
+    } catch {
+      // Session storage can be unavailable in restricted browser contexts.
+    }
+  }
+  return id;
+}
+

@@ -23,6 +23,11 @@ export default runMigrations(
       name: "animations_pinned",
       sql: `ALTER TABLE animations ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`,
     },
+    {
+      version: 3,
+      name: "animations_hover",
+      sql: `ALTER TABLE animations ADD COLUMN IF NOT EXISTS hover TEXT NOT NULL DEFAULT '{}'`,
+    },
   ],
   { table: "_app_migrations" },
 );

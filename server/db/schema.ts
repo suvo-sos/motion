@@ -6,6 +6,7 @@ export const animations = pgTable("animations", {
   title: text("title").notNull().default("Untitled animation"),
   svg: text("svg").notNull().default(""),
   tracks: text("tracks").notNull().default("[]"),
+  hover: text("hover").notNull().default("{}"),
   duration: integer("duration").notNull().default(2000),
   loop: boolean("loop").notNull().default(true),
   pinned: boolean("pinned").notNull().default(false),

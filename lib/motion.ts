@@ -64,6 +64,32 @@ export interface MotionAnimation {
   duration: number;
   loop: boolean;
   updatedAt?: string;
+  /** Hover effects, keyed by element id: what an element does when the
+      pointer is over it. Optional so older projects without it keep
+      working exactly as before. The explicit `| undefined` is required:
+      the project uses exactOptionalPropertyTypes, so assigning an
+      explicitly-undefined hover (e.g. from a save that does not carry
+      one) is a type error without it. */
+  hover?: Record<string, HoverEffect> | undefined;
+}
+
+export type HoverEffectKind =
+  | "scale"
+  | "color"
+  | "rotate"
+  | "bounce"
+  | "glow"
+  | "lift";
+
+export interface HoverEffect {
+  effect: HoverEffectKind;
+  /** Duration of the hover transition (or one bounce cycle) in ms. */
+  durationMs?: number;
+  /** Target fill colour for "color", glow colour for "glow". Hex only. */
+  color?: string;
+  /** Strength: scale factor for "scale", degrees for "rotate",
+      px for "lift" / "bounce". */
+  amount?: number;
 }
 
 export const PROPERTY_GROUPS: Array<{
@@ -708,6 +734,86 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function isSafeHexColor(value: string | undefined): value is string {
+  return !!value && /^#[0-9a-fA-F]{3,8}$/.test(value);
+}
+
+/**
+ * CSS that makes the project's hover effects live — used by the editor
+ * preview and by the animated-SVG export, so what you see on the canvas
+ * is what the exported file does.
+ *
+ * Hover transforms use the individual `scale` / `rotate` / `translate`
+ * properties (not `transform`), so they compose with the timeline's
+ * transform instead of replacing it. One exception: "bounce" sets the
+ * `animation` property, which pauses the timeline animation while the
+ * pointer is over the element and resumes it after.
+ */
+export function hoverEffectsCss(
+  hover: Record<string, HoverEffect> | undefined,
+): string {
+  if (!hover) return "";
+  const blocks: string[] = [];
+  const rules: string[] = [];
+  let index = 0;
+  for (const [id, raw] of Object.entries(hover)) {
+    if (!raw || typeof raw.effect !== "string") continue;
+    const selector = `#${escapeCssIdentifier(id)}`;
+    const duration = Math.min(2000, Math.max(50, Math.round(raw.durationMs ?? 250)));
+    const base = `transform-box: fill-box; transform-origin: center; transition: scale ${duration}ms ease, rotate ${duration}ms ease, translate ${duration}ms ease, fill ${duration}ms ease, filter ${duration}ms ease;`;
+    const amount =
+      typeof raw.amount === "number" && Number.isFinite(raw.amount)
+        ? raw.amount
+        : undefined;
+    switch (raw.effect) {
+      case "scale": {
+        const factor = amount !== undefined ? Math.min(3, Math.max(0.1, amount)) : 1.15;
+        rules.push(`${selector} { ${base} }`);
+        rules.push(`${selector}:hover { scale: ${factor}; }`);
+        break;
+      }
+      case "color": {
+        const color = isSafeHexColor(raw.color) ? raw.color : "#2391FF";
+        rules.push(`${selector} { ${base} }`);
+        rules.push(`${selector}:hover { fill: ${color}; }`);
+        break;
+      }
+      case "rotate": {
+        const deg = amount !== undefined ? Math.min(360, Math.max(-360, amount)) : 15;
+        rules.push(`${selector} { ${base} }`);
+        rules.push(`${selector}:hover { rotate: ${deg}deg; }`);
+        break;
+      }
+      case "lift": {
+        const px = amount !== undefined ? Math.min(100, Math.max(-100, amount)) : -10;
+        rules.push(`${selector} { ${base} }`);
+        rules.push(`${selector}:hover { translate: 0 ${px}px; }`);
+        break;
+      }
+      case "bounce": {
+        const px = amount !== undefined ? Math.min(100, Math.max(1, Math.abs(amount))) : 12;
+        let safe = id.replace(/[^a-zA-Z0-9_-]/g, "_") || "el";
+        if (/^\d/.test(safe)) safe = `m${safe}`;
+        const name = `m-hover-bounce-${safe}-${index}`;
+        blocks.push(`@keyframes ${name} { 0%, 100% { translate: 0 0; } 50% { translate: 0 ${-px}px; } }`);
+        rules.push(`${selector} { ${base} }`);
+        rules.push(`${selector}:hover { animation: ${name} ${Math.max(duration, 200) * 2}ms ease-in-out infinite; }`);
+        break;
+      }
+      case "glow": {
+        const color = isSafeHexColor(raw.color) ? raw.color : "#2391FF";
+        rules.push(`${selector} { ${base} }`);
+        rules.push(`${selector}:hover { filter: drop-shadow(0 0 8px ${color}); }`);
+        break;
+      }
+      default:
+        break;
+    }
+    index++;
+  }
+  return [...blocks, ...rules].join("\n");
+}
+
 export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOptions): string {
   const byTarget = new Map<string, Track[]>();
   for (const tr of anim.tracks ?? []) {
@@ -856,7 +962,15 @@ export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOption
     }
     if (parts.length > 1) reducedRules.push(`${selector} { ${parts.join(" ")} }`);
   }
-  const css = [...blocks, ...rules, ...(reducedRules.length > 0 ? [`@media (prefers-reduced-motion: reduce) {\n${reducedRules.join("\n")}\n}`] : [])].join("\n");
+  // Hover effects ride along in the same <style> block, so the exported
+  // file is interactive on its own. Reduced motion also turns hover
+  // animations off.
+  const hoverCss = hoverEffectsCss(anim.hover);
+  const hoverReducedRules = Object.keys(anim.hover ?? {}).map(
+    (id) => `#${escapeCssIdentifier(id)}:hover { animation: none; }`,
+  );
+  const reducedParts = [...reducedRules, ...hoverReducedRules];
+  const css = [...blocks, ...rules, ...(hoverCss ? [hoverCss] : []), ...(reducedParts.length > 0 ? [`@media (prefers-reduced-motion: reduce) {\n${reducedParts.join("\n")}\n}`] : [])].join("\n");
   // Sanitise before the generated <style> block is appended below, so the
   // export's own style is not mistaken for source content.
   let svg = sanitizeSvg(anim.svg);

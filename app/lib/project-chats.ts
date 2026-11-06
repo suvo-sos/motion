@@ -66,6 +66,15 @@ export function getProjectChatThread(projectId: string): string | null {
   return readMap()[projectId] ?? null;
 }
 
+/** The project a thread belongs to, or null when no project maps to it. */
+export function getProjectForChatThread(threadId: string): string | null {
+  if (!threadId) return null;
+  for (const [projectId, mapped] of Object.entries(readMap())) {
+    if (mapped === threadId) return projectId;
+  }
+  return null;
+}
+
 /** Record that this thread belongs to this project. */
 export function setProjectChatThread(
   projectId: string,

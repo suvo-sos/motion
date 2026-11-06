@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { exportJs } from "./export";
-import { sampleTrack, toAnimatedSvg, type MotionAnimation, type Track } from "./motion";
+import { hoverEffectsCss, sampleTrack, toAnimatedSvg, type MotionAnimation, type Track } from "./motion";
 import { sanitizeSvg } from "./sanitize";
 
 function track(property: Track["property"], keyframes: Track["keyframes"]): Track {
@@ -70,6 +70,47 @@ describe("toAnimatedSvg", () => {
     );
     expect(svg).not.toContain("alert(1)");
     expect(svg).not.toContain("onload");
+  });
+});
+
+describe("hoverEffectsCss", () => {
+  it("emits a :hover scale rule that composes with the timeline transform", () => {
+    const css = hoverEffectsCss({
+      box: { effect: "scale", amount: 1.2, durationMs: 300 },
+    });
+    expect(css).toContain("#box:hover { scale: 1.2; }");
+    expect(css).toContain("transform-box: fill-box;");
+    // Individual scale property, not transform — so it adds to the
+    // timeline's transform instead of replacing it.
+    expect(css).not.toContain("transform:");
+  });
+
+  it("escapes ids and rejects non-hex colours", () => {
+    const css = hoverEffectsCss({
+      "my shape": { effect: "color", color: "red; } #x { fill: blue" },
+    });
+    expect(css).toContain("#my\\ shape:hover");
+    expect(css).toContain("fill: #2391FF;");
+    expect(css).not.toContain("red;");
+  });
+
+  it("returns empty CSS when there are no hover effects", () => {
+    expect(hoverEffectsCss(undefined)).toBe("");
+    expect(hoverEffectsCss({})).toBe("");
+  });
+});
+
+describe("toAnimatedSvg", () => {
+  it("carries hover effects into the exported SVG", () => {
+    const svg = toAnimatedSvg(anim({ hover: { box: { effect: "glow" } } }));
+    expect(svg).toContain("#box:hover { filter: drop-shadow(0 0 8px #2391FF); }");
+    expect(svg).toContain("<style>");
+  });
+
+  it("turns hover animations off for reduced motion", () => {
+    const svg = toAnimatedSvg(anim({ hover: { box: { effect: "bounce" } } }));
+    expect(svg).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(svg).toContain("#box:hover { animation: none; }");
   });
 });
 
