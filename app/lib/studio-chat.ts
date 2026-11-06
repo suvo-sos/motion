@@ -10,17 +10,15 @@
  * covers the case where the panel is already mounted and holds the old thread
  * in memory only.
  */
-const SIDEBAR_STORAGE_KEY = "chat";
 const SIDEBAR_STORAGE_PREFIXES = [
   "agent-chat-active-thread",
   "agent-chat-open-tabs",
 ];
 
 function isSidebarStorageKey(key: string): boolean {
-  if (!SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
-    return false;
-  }
-  return key.split(":").includes(SIDEBAR_STORAGE_KEY);
+  return SIDEBAR_STORAGE_PREFIXES.some(
+    (prefix) => key === prefix || key.startsWith(`${prefix}:`),
+  );
 }
 
 /** Start the studio with no previous conversation in the agent sidebar. */

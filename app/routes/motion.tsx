@@ -11,7 +11,7 @@ import {
 import { Link, useSearchParams } from "react-router";
 import { createPortal } from "react-dom";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
-import { callAction } from "@agent-native/core/client/hooks";
+import { callAction, useSession } from "@agent-native/core/client/hooks";
 import { AgentToggleButton } from "@agent-native/toolkit/app/chat";
 import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
 import {
@@ -155,6 +155,15 @@ import {
   useLocalProject,
   useLocalProjects,
 } from "../lib/local-projects";
+import { readLastChatThread } from "../lib/chat-home-thread";
+import {
+  getProjectChatThread,
+  isProjectChatThreadAlive,
+  openProjectChatThread,
+  readActiveSidebarThread,
+  removeProjectChatThread,
+  setProjectChatThread,
+} from "../lib/project-chats";
 import {
   getMotionEditorActions,
   publishMotionEditor,
@@ -562,11 +571,16 @@ export default function MotionRoute() {
   const localProject = useLocalProject(selectedId);
   const animation = localProject;
 
+  // callAction("get-animation") hits /_agent-native/*, which 401s without a
+  // session — only import from the server scratchpad while signed in.
+  const { status: sessionStatus } = useSession();
+
   // The agent writes new projects to the server scratchpad. When it navigates
   // to an id we do not have in the browser yet, pull it in once.
   const [importingFromServer, setImportingFromServer] = useState(false);
   useEffect(() => {
     if (
+      sessionStatus !== "authenticated" ||
       !isServerScratchpadEnabled() ||
       !selectedId ||
       localProject ||
@@ -593,7 +607,160 @@ export default function MotionRoute() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, localProject, listLoading]);
+  }, [selectedId, localProject, listLoading, sessionStatus]);
+
+  // Mirror the open project to the server when it opens, so the agent can
+  // load it. The mirror otherwise only runs on save, so a project that was
+  // never saved since the server mirror was switched on had no server row
+  // at all — the agent's get-animation came back empty and it asked which
+  // animation to update. Authenticated only: the mirror call 401s without
+  // a session, and signed-out visitors cannot use the agent anyway.
+  useEffect(() => {
+    if (sessionStatus !== "authenticated" || !selectedId) return;
+    void syncProjectToServerDebounced(selectedId, 0);
+  }, [selectedId, sessionStatus]);
+
+  // The agent edits the server copy of the open project, but the studio
+  // only reads localStorage — the import above bails once the project is
+  // local, so an agent edit (e.g. "make the ball green") never reached the
+  // canvas until a reload. Re-read the server copy while the studio is
+  // open: importLocalProject only applies it when the server copy is newer
+  // than the local one, so local edits are never overwritten.
+  //
+  // Guard: a refresh must never land while the user is editing. The
+  // stored copy is older than the server copy after every sync, so a
+  // refresh mid-drag would replace the canvas with the pre-edit server
+  // version and the manual change would look unsaved. Skip the refresh
+  // until 3s after the last interaction, so the 600ms autosave lands first.
+  const refreshingFromServerRef = useRef(false);
+  const lastInteractionRef = useRef(0);
+  useEffect(() => {
+    const markInteraction = () => {
+      lastInteractionRef.current = Date.now();
+    };
+    window.addEventListener("pointerdown", markInteraction);
+    window.addEventListener("keydown", markInteraction);
+    window.addEventListener("input", markInteraction);
+    return () => {
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+      window.removeEventListener("input", markInteraction);
+    };
+  }, []);
+  useEffect(() => {
+    if (
+      sessionStatus !== "authenticated" ||
+      !isServerScratchpadEnabled() ||
+      !selectedId ||
+      !localProject
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      if (cancelled || refreshingFromServerRef.current) return;
+      if (Date.now() - lastInteractionRef.current < 3000) return;
+      refreshingFromServerRef.current = true;
+      try {
+        const data: any = await callAction("get-animation", { id: selectedId });
+        const serverAnimation = data?.animation as MotionAnimation | null;
+        if (!cancelled && serverAnimation?.id) {
+          importLocalProject(serverAnimation);
+        }
+      } catch {
+        // A failed refresh leaves the local copy on screen; the next tick retries.
+      } finally {
+        refreshingFromServerRef.current = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    window.addEventListener("agent-chat:threads-updated", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("agent-chat:threads-updated", refresh);
+    };
+  }, [selectedId, localProject, sessionStatus]);
+
+  // Per-project agent chats: each project remembers the thread that built
+  // it, so reopening a project reopens its conversation. The sidebar only
+  // holds one active thread, so we switch its pointer when the project
+  // changes and record whichever thread is active under this project.
+  // The switch is guarded for 3s so the recorder below does not save the
+  // stale thread we are switching away from under the new project.
+  const projectChatSwitchUntilRef = useRef(0);
+  const prevSelectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prevId = prevSelectedIdRef.current;
+    prevSelectedIdRef.current = selectedId;
+    if (!selectedId) return;
+    // Handoff wins: the home composer just built this project in the thread
+    // the sidebar is showing right now. Record it as this project's thread
+    // instead of switching away from it.
+    const handoffThreadId = readLastChatThread();
+    if (
+      handoffThreadId &&
+      handoffThreadId === readActiveSidebarThread()
+    ) {
+      setProjectChatThread(selectedId, handoffThreadId);
+      return;
+    }
+    // Save the thread we are leaving under the project we are leaving.
+    if (prevId && prevId !== selectedId) {
+      const leavingThreadId = readActiveSidebarThread();
+      if (leavingThreadId) setProjectChatThread(prevId, leavingThreadId);
+    }
+    // Restore this project's thread, if it has one and it is not open.
+    // A mapped thread can be dead on the server (never persisted, deleted,
+    // or lost in a dev-storage reset) — opening it just 404s and shows an
+    // empty chat, so check first and forget dead mappings instead.
+    const mapped = getProjectChatThread(selectedId);
+    if (mapped && mapped !== readActiveSidebarThread()) {
+      projectChatSwitchUntilRef.current = Date.now() + 3000;
+      let cancelled = false;
+      let retryTimer: number | undefined;
+      void (async () => {
+        if (!(await isProjectChatThreadAlive(mapped))) {
+          if (!cancelled) removeProjectChatThread(selectedId);
+          return;
+        }
+        if (cancelled) return;
+        openProjectChatThread(mapped);
+        // The sidebar panel is lazy-loaded; replay once in case it was not
+        // listening yet. Duplicate opens of the same thread are ignored.
+        retryTimer = window.setTimeout(
+          () => openProjectChatThread(mapped),
+          500,
+        );
+      })();
+      return () => {
+        cancelled = true;
+        if (retryTimer) window.clearTimeout(retryTimer);
+      };
+    }
+  }, [selectedId]);
+
+  // Record the active thread under the open project: a new chat started in
+  // the sidebar, a thread the agent just opened, or the handoff thread all
+  // become this project's chat within a couple of seconds.
+  useEffect(() => {
+    if (!selectedId) return;
+    const record = () => {
+      if (Date.now() < projectChatSwitchUntilRef.current) return;
+      const active = readActiveSidebarThread();
+      if (!active) return;
+      if (getProjectChatThread(selectedId) === active) return;
+      setProjectChatThread(selectedId, active);
+    };
+    record();
+    const timer = window.setInterval(record, 2000);
+    window.addEventListener("agent-chat:threads-updated", record);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("agent-chat:threads-updated", record);
+    };
+  }, [selectedId]);
 
   // Optimistic SVG: static property edits update the artboard immediately while
   // the debounced save travels to the server.
@@ -694,29 +861,41 @@ export default function MotionRoute() {
   }, []);
 
   const createSample = async () => {
-    const res = saveLocalProject({
-      title: "Bouncing ball",
-      svg: SAMPLE_SVG,
-      tracks: SAMPLE_TRACKS,
-      duration: 1600,
-      loop: true,
-    });
-    if (res.id) {
-      void syncProjectToServerDebounced(res.id, 0);
-      select(res.id);
+    try {
+      const res = saveLocalProject({
+        title: "Bouncing ball",
+        svg: SAMPLE_SVG,
+        tracks: SAMPLE_TRACKS,
+        duration: 1600,
+        loop: true,
+      });
+      if (res.id) {
+        void syncProjectToServerDebounced(res.id, 0);
+        select(res.id);
+      }
+    } catch (err) {
+      console.error("Failed to create the sample project", err);
+      toast.error("Couldn't create the sample project. Try again.");
     }
   };
 
-  const saveAnimation = async (next: MotionAnimation) => {
-    const saved = saveLocalProject({
-      id: next.id,
-      title: next.title,
-      svg: next.svg,
-      tracks: next.tracks,
-      duration: next.duration,
-      loop: next.loop,
-    });
-    syncProjectToServerDebounced(saved.id);
+  const saveAnimation = async (next: MotionAnimation): Promise<boolean> => {
+    try {
+      const saved = saveLocalProject({
+        id: next.id,
+        title: next.title,
+        svg: next.svg,
+        tracks: next.tracks,
+        duration: next.duration,
+        loop: next.loop,
+      });
+      syncProjectToServerDebounced(saved.id);
+      return true;
+    } catch (err) {
+      console.error("Failed to save animation", err);
+      toast.error("Couldn't save your changes. Try again.");
+      return false;
+    }
   };
 
   const handleToggleLock = async (node: TreeNode) => {
@@ -1261,9 +1440,9 @@ export default function MotionRoute() {
     } else {
       pathEl.setAttribute("fill", "none");
       pathEl.setAttribute("stroke", SHAPE_STROKE);
-      // Pen lines were 3, then 2 units; 1 is thinner and matches the
-      // preview. Still artwork units, so it scales with zoom.
-      pathEl.setAttribute("stroke-width", "1");
+      // Pen lines were 3, then 2, then 1 units; 0.5 is thinner and matches
+      // the preview. Still artwork units, so it scales with zoom.
+      pathEl.setAttribute("stroke-width", "0.5");
       pathEl.setAttribute("stroke-linecap", "round");
       pathEl.setAttribute("stroke-linejoin", "round");
     }
@@ -2650,7 +2829,7 @@ function PropertiesPanel({
 }: {
   animation: MotionAnimation | null;
   selectedElementId: string | null;
-  onSave: (next: MotionAnimation) => Promise<void>;
+  onSave: (next: MotionAnimation) => Promise<boolean>;
   onPreviewSvg?: (svg: string) => void;
   onSelectElement: (id: string | null) => void;
 }) {
@@ -2690,7 +2869,10 @@ function PropertiesPanel({
       const latest = latestAnimationRef.current;
       const svg = pendingSvgRef.current ?? draftSvgRef.current;
       if (!latest || !svg) return;
-      void onSave({ ...latest, svg });
+      void Promise.resolve(onSave({ ...latest, svg })).catch((err) => {
+        console.error("Failed to save animation", err);
+        toast.error("Couldn't save your changes. Try again.");
+      });
       pendingSvgRef.current = null;
     }, 400);
   }, [onSave]);
@@ -4451,7 +4633,7 @@ function LeftSidebarWithTabs({
   onAddImage: (data: File | string) => void;
   onImportSvg?: (svgText: string) => void;
   onTitleChange?: (next: string) => void;
-  onSave: (next: MotionAnimation) => Promise<void>;
+  onSave: (next: MotionAnimation) => Promise<boolean>;
   onPreviewSvg?: (svg: string) => void;
   onUndo?: () => void;
   onRedo?: () => void;
@@ -4700,7 +4882,7 @@ function ElementsRail({
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
-  onSave: (next: MotionAnimation) => Promise<void>;
+  onSave: (next: MotionAnimation) => Promise<boolean>;
   hideHeader?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -6107,13 +6289,10 @@ function AgentColorMention({
 }) {
   const [open, setOpen] = useState(false);
   const [injected, setInjected] = useState(false);
-  useEffect(() => {
-    if (!hideWhenInjected) return;
-    const onInjected = () => setInjected(true);
-    window.addEventListener("composer-color-injected", onInjected);
-    return () => window.removeEventListener("composer-color-injected", onInjected);
-  }, [hideWhenInjected]);
-  if (hideWhenInjected && injected) return null;
+  // All hooks must run before any early return (Rules of Hooks): the
+  // return-null below used to sit between useState calls, so re-adding a
+  // caller with hideWhenInjected would have thrown "Rendered fewer hooks
+  // than expected" and unmounted the route.
   const [mode, setMode] = useState<"solid" | "gradient">("solid");
   const [solidColor, setSolidColor] = useState("#2391FF");
   const [fromColor, setFromColor] = useState("#2391FF");
@@ -6121,6 +6300,13 @@ function AgentColorMention({
   const [editingStop, setEditingStop] = useState<"from" | "to">("from");
   const [angle, setAngle] = useState(90);
   const [hasPicked, setHasPicked] = useState(false);
+  useEffect(() => {
+    if (!hideWhenInjected) return;
+    const onInjected = () => setInjected(true);
+    window.addEventListener("composer-color-injected", onInjected);
+    return () => window.removeEventListener("composer-color-injected", onInjected);
+  }, [hideWhenInjected]);
+  if (hideWhenInjected && injected) return null;
 
   const toSixDigit = (value: string) => {
     const clean = value.trim();
@@ -6640,7 +6826,7 @@ function StudioWorkspace({
 }: {
   animation: MotionAnimation;
   title: string;
-  onSave: (next: MotionAnimation) => Promise<void>;
+  onSave: (next: MotionAnimation) => Promise<boolean>;
   timelineHeight: number;
   onTimelineHeightChange: (height: number) => void;
   /** Width of the resizable left sidebar, so the timeline can extend under
@@ -7535,6 +7721,13 @@ function StudioWorkspace({
   const serverRevision = `${animation.id}:${animation.updatedAt ?? ""}`;
   const syncedRevisionRef = useRef(serverRevision);
   const savedTracksRef = useRef(animation.tracks ?? []);
+  // The autosave timer below reads the animation through this ref, so a
+  // later-firing timer never overwrites newer artwork with a stale copy —
+  // the same pattern PropertiesPanel uses for its own latestAnimationRef.
+  const latestAnimationRef = useRef(animation);
+  useEffect(() => {
+    latestAnimationRef.current = animation;
+  }, [animation]);
   useEffect(() => {
     if (syncedRevisionRef.current === serverRevision) return;
     syncedRevisionRef.current = serverRevision;
@@ -7569,7 +7762,8 @@ function StudioWorkspace({
     }
     const timer = window.setTimeout(() => {
       savedTracksRef.current = tracks;
-      void onSave({ ...animation, title, tracks, duration, loop });
+      const latest = latestAnimationRef.current;
+      void onSave({ ...latest, title, tracks, duration, loop });
     }, 600);
     return () => window.clearTimeout(timer);
   }, [title, tracks, duration, loop]);
@@ -9221,7 +9415,11 @@ function StudioWorkspace({
     };
   }, []);
 
-  const handleWheel = (e: React.WheelEvent) => {
+  // Wheel zoom/pan is bound as a native non-passive listener below. React
+  // registers `onWheel` as a passive root listener, so preventDefault() in a
+  // React handler only logs "Unable to preventDefault inside passive event
+  // listener invocation" and the surrounding page scrolls under the canvas.
+  const handleWheel = (e: WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       zoomAt(zoom * Math.exp(-e.deltaY * 0.002), e.clientX, e.clientY);
@@ -9239,6 +9437,19 @@ function StudioWorkspace({
     e.preventDefault();
     zoomAt(zoom * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
   };
+  // Latest-handler ref keeps the listener attached once across renders while
+  // still seeing the current zoom and tool on every event.
+  const wheelHandlerRef = useRef(handleWheel);
+  useEffect(() => {
+    wheelHandlerRef.current = handleWheel;
+  });
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const onWheel = (event: WheelEvent) => wheelHandlerRef.current(event);
+    viewer.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewer.removeEventListener("wheel", onWheel);
+  }, []);
 
   const selected =
     selection && tracks[selection.track]
@@ -9493,7 +9704,7 @@ function StudioWorkspace({
   const toolCursorStyle = effectiveTool === "pen" 
     ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M15 2 L18 5 L8 15 L5 15 L5 12 Z M13 4 L16 7' fill='%23fff' stroke='%232391FF' stroke-width='1.5' stroke-linejoin='round'/%3E%3Ccircle cx='5.5' cy='14.5' r='1' fill='%232391FF'/%3E%3C/svg%3E") 5 15, crosshair`
     : effectiveTool === "node"
-    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='9' fill='none' stroke='%23ffffff' stroke-width='3' opacity='0.9'/%3E%3Ccircle cx='14' cy='14' r='9' fill='none' stroke='%232391FF' stroke-width='1.5'/%3E%3Cline x1='14' y1='1' x2='14' y2='7' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='14' y1='21' x2='14' y2='27' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='1' y1='14' x2='7' y2='14' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='21' y1='14' x2='27' y2='14' stroke='%232391FF' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='14' cy='14' r='2.5' fill='%232391FF' stroke='%23ffffff' stroke-width='1'/%3E%3C/svg%3E") 14 14, crosshair`
+    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cline x1='14' y1='4' x2='14' y2='24' stroke='%23ffffff' stroke-width='3' stroke-linecap='round'/%3E%3Cline x1='4' y1='14' x2='24' y2='14' stroke='%23ffffff' stroke-width='3' stroke-linecap='round'/%3E%3Cline x1='14' y1='4' x2='14' y2='24' stroke='%23000000' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='4' y1='14' x2='24' y2='14' stroke='%23000000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") 14 14, crosshair`
     : effectiveTool === "hand"
     ? isPanning ? "grabbing" : "grab"
     : "default";
@@ -9832,7 +10043,6 @@ function StudioWorkspace({
         className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/30 select-none"
         style={{ cursor: toolCursorStyle }}
         onPointerDown={handleWorkspacePointerDown}
-        onWheel={handleWheel}
         onDragEnter={handleImageDragEnter}
         onDragOver={handleImageDragOver}
         onDragLeave={handleImageDragLeave}
@@ -10042,11 +10252,11 @@ function StudioWorkspace({
                     d={penPathD(penPoints, false)}
                     fill="none"
                     stroke="#2391FF"
-                    // 1 unit, in artwork units — not screen-constant like
+                    // 0.5 units, in artwork units — not screen-constant like
                     // the handle dots. So it stays thin, and it still gets
                     // thinner on screen when you zoom out and thicker
                     // when you zoom in, exactly like the finished path.
-                    stroke-width="1"
+                    stroke-width="0.5"
                     stroke-linecap="round"
                     stroke-linejoin="round"
                     opacity="0.9"
@@ -12222,7 +12432,7 @@ function AspectRatioControl({
   onSave,
 }: {
   animation: MotionAnimation;
-  onSave: (next: MotionAnimation) => Promise<void>;
+  onSave: (next: MotionAnimation) => Promise<boolean>;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [customWidth, setCustomWidth] = useState("");

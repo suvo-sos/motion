@@ -2,6 +2,7 @@ import {
   markAgentChatHomeHandoff,
   navigateWithAgentChatViewTransition,
 } from "@agent-native/core/client/agent-chat";
+import { useSession } from "@agent-native/core/client/hooks";
 import { createAgentNativeAgentKitTransport } from "@agent-native/core/client/agentkit-chat/transport";
 import {
   saveLocalProject,
@@ -646,9 +647,10 @@ function HomeAgentComposer({
 }) {
   const navigate = useNavigate();
   const realtimeVoice = useRealtimeVoiceModeOptional();
-  // The composer input shows for everyone, signed in or not. It only mounts
-  // in the browser (never during server rendering): rendering it on the
-  // server crashes anonymous page loads.
+  const { status } = useSession();
+  // The composer only mounts in the browser (never during server rendering):
+  // rendering it on the server crashes anonymous page loads. Signed-out
+  // visitors get the sign-in prompt below instead of the live composer.
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
@@ -661,7 +663,7 @@ function HomeAgentComposer({
     }),
   );
 
-  if (!mounted) {
+  if (!mounted || status === "loading") {
     return (
       <div
         className="agentkit-tokens w-full max-w-[calc(var(--agent-kit-conversation-max-width,47rem)-2rem)] text-start"
@@ -669,6 +671,23 @@ function HomeAgentComposer({
       >
         <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
           Loading the AI composer…
+        </div>
+      </div>
+    );
+  }
+
+  if (status !== "authenticated") {
+    // The composer talks to the agent engine, models and threads endpoints,
+    // which all 401 without a session — show the sign-in prompt instead.
+    return (
+      <div
+        className="agentkit-tokens w-full max-w-[calc(var(--agent-kit-conversation-max-width,47rem)-2rem)] text-start"
+        data-agentkit-composer-size="large"
+      >
+        <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+          <Link to="/sign-in?return=%2Fhome">
+            Sign in to chat with the AI agent
+          </Link>
         </div>
       </div>
     );

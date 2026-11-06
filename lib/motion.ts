@@ -420,7 +420,7 @@ function lerpColor(a: Rgba, b: Rgba, p: number): string {
 }
 
 export function sampleTrack(track: Track, t: number): number | string {
-  const kfs = [...track.keyframes].sort((a, b) => a.t - b.t);
+  const kfs = [...(track.keyframes ?? [])].sort((a, b) => a.t - b.t);
   const first = kfs[0];
   const last = kfs[kfs.length - 1];
   if (!first || !last) return 0;
@@ -513,6 +513,21 @@ function numeric(value: number | string | undefined, fallback: number) {
   return fallback;
 }
 
+/**
+ * Node-safe CSS.escape: the browser global throws ReferenceError under
+ * Node/SSR, where this module also runs (exports). Falls back to a minimal
+ * escaper that backslash-escapes anything outside [a-zA-Z0-9_-] and encodes
+ * a leading digit as its hex code point, so ids like "123" stay valid.
+ */
+function escapeCssIdentifier(id: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(id);
+  }
+  return id
+    .replace(/^(\d)/, (_m: string, d: string) => `\\3${d} `)
+    .replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
+}
+
 export function applyAt(root: ParentNode, tracks: Track[], t: number) {
   // Clear styles applied by the previous frame so a removed track does not
   // leave a stale transform behind.
@@ -530,13 +545,13 @@ export function applyAt(root: ParentNode, tracks: Track[], t: number) {
   }
 
   const byTarget = new Map<string, Track[]>();
-  for (const tr of tracks) {
+  for (const tr of tracks ?? []) {
     if (!byTarget.has(tr.target)) byTarget.set(tr.target, []);
     byTarget.get(tr.target)!.push(tr);
   }
   for (const [id, list] of byTarget) {
     const el = root.querySelector(
-      `#${CSS.escape(id)}`,
+      `#${escapeCssIdentifier(id)}`,
     ) as HTMLElement | SVGElement | null;
     if (!el) continue;
     const styles = (el as HTMLElement).style;
@@ -585,7 +600,7 @@ export function applyAt(root: ParentNode, tracks: Track[], t: number) {
 
 /** Add explicit 0% and 100% frames so a value never jumps at the seam. */
 function withEnds(track: Track): Keyframe[] {
-  const kfs = [...track.keyframes].sort((a, b) => a.t - b.t);
+  const kfs = [...(track.keyframes ?? [])].sort((a, b) => a.t - b.t);
   const first = kfs[0];
   const last = kfs[kfs.length - 1];
   if (!first || !last) return kfs;
@@ -630,13 +645,13 @@ function keyframeCss(track: Track): string {
 
 function unionTimes(tracks: Track[]): number[] {
   return Array.from(
-    new Set([0, 1, ...tracks.flatMap((track) => track.keyframes.map((k) => k.t))]),
+    new Set([0, 1, ...tracks.flatMap((track) => (track.keyframes ?? []).map((k) => k.t))]),
   ).sort((a, b) => a - b);
 }
 
 function easeAt(t: number, tracks: Track[]): string {
   const source = tracks
-    .flatMap((track) => track.keyframes)
+    .flatMap((track) => track.keyframes ?? [])
     .find((k) => Math.abs(k.t - t) < 1e-6);
   return source?.ease ? ` animation-timing-function: ${cssTimingFunction(source.ease)};` : "";
 }
@@ -695,20 +710,35 @@ function escapeXml(s: string): string {
 
 export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOptions): string {
   const byTarget = new Map<string, Track[]>();
-  for (const tr of anim.tracks) {
+  for (const tr of anim.tracks ?? []) {
     if (!byTarget.has(tr.target)) byTarget.set(tr.target, []);
     byTarget.get(tr.target)!.push(tr);
   }
 
   const iteration = (options?.loop ?? anim.loop) ? "infinite" : "1";
   const speed = Math.max(0.1, options?.speed ?? 1);
-  const duration = anim.duration / speed;
+  const duration =
+    (Number.isFinite(anim.duration) ? anim.duration : 2000) / speed;
   const trigger = options?.trigger ?? "load";
   const blocks: string[] = [];
   const rules: string[] = [];
 
+  // Collision-proof @keyframes names: two different ids such as "my shape"
+  // and "my_shape" sanitise to the same string, so each target gets a
+  // unique index suffix. Selectors below keep using the real (escaped) id,
+  // so digit-leading ids stay valid and still match their element.
+  const safeIds = new Map<string, string>();
+  let targetIndex = 0;
+  for (const id of byTarget.keys()) {
+    let base = id.replace(/[^a-zA-Z0-9_-]/g, "_") || "el";
+    if (/^\d/.test(base)) base = `m${base}`;
+    safeIds.set(id, `${base}-${targetIndex}`);
+    targetIndex++;
+  }
+
   for (const [id, list] of byTarget) {
-    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeId = safeIds.get(id)!;
+    const selector = `#${escapeCssIdentifier(id)}`;
     const animations: string[] = [];
     const staticProps: string[] = [];
 
@@ -791,9 +821,9 @@ export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOption
         uniqueProps.length ? ` ${uniqueProps.join(" ")}` : ""
       }`;
       if (trigger === "hover") {
-        rules.push(`#${safeId}:hover { ${rule} }`);
+        rules.push(`${selector}:hover { ${rule} }`);
       } else {
-        rules.push(`#${safeId} { ${rule} }`);
+        rules.push(`${selector} { ${rule} }`);
       }
     }
   }
@@ -803,7 +833,8 @@ export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOption
   // plain declarations with animation disabled.
   const reducedRules: string[] = [];
   for (const [id, list] of byTarget) {
-    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeId = safeIds.get(id)!;
+    const selector = `#${escapeCssIdentifier(id)}`;
     const parts: string[] = ["animation: none;"];
     const transforms = list.filter((tr) => TRANSFORM_PROPERTIES.includes(tr.property));
     if (transforms.length > 0) {
@@ -823,7 +854,7 @@ export function toAnimatedSvg(anim: MotionAnimation, options?: AnimatedSvgOption
       const decl = declaration(tr.property, sampleTrack(tr, 1));
       if (decl) parts.push(decl);
     }
-    if (parts.length > 1) reducedRules.push(`#${safeId} { ${parts.join(" ")} }`);
+    if (parts.length > 1) reducedRules.push(`${selector} { ${parts.join(" ")} }`);
   }
   const css = [...blocks, ...rules, ...(reducedRules.length > 0 ? [`@media (prefers-reduced-motion: reduce) {\n${reducedRules.join("\n")}\n}`] : [])].join("\n");
   // Sanitise before the generated <style> block is appended below, so the

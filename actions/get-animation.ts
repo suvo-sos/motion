@@ -26,7 +26,11 @@ export default defineAction({
   mcpTool: true,
   readOnly: true,
   schema: z.object({ id: z.string().describe("Animation id") }),
-  http: { method: "GET" },
+  // POST, not GET: the studio calls this via callAction(), which defaults to
+  // POST. With GET declared, that call got a 405 and the studio showed
+  // "This animation no longer exists" for animations the agent had just made.
+  // Agent tool calls bypass HTTP, so this does not change how the agent reads.
+  http: { method: "POST" },
   run: async ({ id }) => {
     const db = getDb();
     const rows = await db

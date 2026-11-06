@@ -13,7 +13,6 @@ const INITIAL_TOOL_NAMES = [
   "get-animation",
   "save-animation",
   "delete-animation",
-  "ask-question",
 ];
 
 export default createAgentChatPlugin({

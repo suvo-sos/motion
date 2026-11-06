@@ -1,3 +1,4 @@
+import { useSession } from "@agent-native/core/client/hooks";
 import { useT } from "@agent-native/core/client/i18n";
 import {
   deleteProjectEverywhere,
@@ -31,6 +32,7 @@ import {
 import { APP_TITLE } from "@/lib/app-config";
 import { toAnimatedSvg } from "../../../lib/motion";
 import { useState } from "react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { startFreshStudioChat } from "@/lib/studio-chat";
 import {
@@ -89,6 +91,7 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
       }
     } catch (error) {
       console.error(error);
+      toast.error("Couldn't create the project. Try again.");
     } finally {
       setCreating(false);
     }
@@ -293,6 +296,8 @@ export function Sidebar({
   onCollapsedChange,
 }: SidebarProps) {
   const t = useT();
+  // OrgSwitcher calls /_agent-native/org/me, which 401s without a session.
+  const { status } = useSession();
   const ToggleIcon = collapsed
     ? IconLayoutSidebarLeftExpand
     : IconLayoutSidebarLeftCollapse;
@@ -393,8 +398,9 @@ export function Sidebar({
               : "flex items-center gap-0.5",
           )}
         >
-          <OrgSwitcher
-            reserveSpace
+          {status === "authenticated" && (
+            <OrgSwitcher
+              reserveSpace
             compact={collapsed}
             currentAppId="chat"
             className={
@@ -402,7 +408,8 @@ export function Sidebar({
                 ? "size-8 bg-transparent p-0 hover:bg-sidebar-accent"
                 : "min-w-0 flex-1 h-11 rounded-lg bg-transparent px-3 py-2 text-sm text-sidebar-accent-foreground hover:bg-sidebar-accent"
             }
-          />
+            />
+          )}
           {searchButton}
           {collapseButton}
         </div>

@@ -1,6 +1,6 @@
 import { configureTracking } from "@agent-native/core/client/analytics";
 import { appPath } from "@agent-native/core/client/api-path";
-import { useDbSync } from "@agent-native/core/client/hooks";
+import { useDbSync, useSession } from "@agent-native/core/client/hooks";
 import { createAgentNativeQueryClient } from "@agent-native/core/client/hooks";
 import { getLocaleInitScript, useT } from "@agent-native/core/client/i18n";
 import { getThemeInitScript } from "@agent-native/core/client/theme";
@@ -44,6 +44,11 @@ configureTracking({
     app: "svg-motion",
     template: "chat",
   }),
+  // Signed-out visitors have no session, so the analytics LLM-connection
+  // refresh would 401 on /_agent-native/agent-engine/status on every
+  // public page load. The agent UI fetches engine status itself when it
+  // mounts, so this only drops the analytics-side poll.
+  llmConnectionStatus: false,
 });
 
 export const links: LinksFunction = () => [
@@ -101,6 +106,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 function DbSyncSetup() {
+  // useDbSync writes navigation state to /_agent-native/application-state,
+  // which 401s without a session — only sync while signed in.
+  const { status } = useSession();
+  if (status !== "authenticated") return null;
+  return <DbSyncSetupInner />;
+}
+
+function DbSyncSetupInner() {
   const qc = useQueryClient();
   useNavigationState();
   useDbSync({
@@ -130,11 +143,15 @@ function AppContent() {
   const t = useT();
   const location = useLocation();
   const isChatThread = threadIdFromPath(location.pathname) !== null;
+  // CommandMenu checks the agent engine on mount, which 401s without a
+  // session — only mount it while signed in.
+  const { status } = useSession();
   useCommandMenuShortcut(useCallback(() => setCmdkOpen(true), []));
   return (
     <>
-      <CommandMenu
-        open={cmdkOpen}
+      {status === "authenticated" ? (
+        <CommandMenu
+          open={cmdkOpen}
         onOpenChange={setCmdkOpen}
         chatStorageKey="chat"
       >
@@ -175,7 +192,8 @@ function AppContent() {
         <CommandMenu.Group heading={t("root.commandAppearance")}>
           <ThemeToggleItem />
         </CommandMenu.Group>
-      </CommandMenu>
+        </CommandMenu>
+      ) : null}
       <AppLayout>
         <Outlet />
       </AppLayout>
@@ -206,8 +224,14 @@ function ClientOnly({ children }: { children: React.ReactNode }) {
   return mounted ? <>{children}</> : null;
 }
 
-export default function Root() {
-  const [queryClient] = useState(() => createAgentNativeQueryClient());
+// Runs only inside ClientOnly (browser, post-mount), so the router hook
+// below never executes during SSR. Root itself stays hook-free apart from
+// the query-client state.
+function RootProviders({
+  queryClient,
+}: {
+  queryClient: ReturnType<typeof createAgentNativeQueryClient>;
+}) {
   // The path, not the visitor, picks the shell, so the SSR shell stays one
   // cached page per URL.
   const { pathname } = useLocation();
@@ -216,17 +240,24 @@ export default function Root() {
   // route still goes through RequireSession.
   const isPublicPath = isPublicPathname(pathname);
   return (
+    <AppProviders
+      queryClient={queryClient}
+      isPublicPath={isPublicPath}
+      skeletonLayout={skeletonLayoutForPath(pathname)}
+      i18n={{ catalog: i18nCatalog }}
+    >
+      <DbSyncSetup />
+      <AppContent />
+    </AppProviders>
+  );
+}
+
+export default function Root() {
+  const [queryClient] = useState(() => createAgentNativeQueryClient());
+  return (
     <AppToolkitProvider>
       <ClientOnly>
-        <AppProviders
-          queryClient={queryClient}
-          isPublicPath={isPublicPath}
-          skeletonLayout={skeletonLayoutForPath(pathname)}
-          i18n={{ catalog: i18nCatalog }}
-        >
-          <DbSyncSetup />
-          <AppContent />
-        </AppProviders>
+        <RootProviders queryClient={queryClient} />
       </ClientOnly>
     </AppToolkitProvider>
   );

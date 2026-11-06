@@ -13,5 +13,5 @@ import { createAuthPlugin } from "@agent-native/core/server";
  * anonymous visitors cannot call actions (save/delete/purge) or the agent.
  */
 export default createAuthPlugin({
-  publicPaths: ["/", "/home", "/motion"],
+  publicPaths: ["/", "/home", "/motion", "/manifest.json"],
 });

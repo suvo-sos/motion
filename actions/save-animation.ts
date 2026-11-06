@@ -91,7 +91,23 @@ export default defineAction({
         .where(eq(animations.id, id))
         .limit(1);
       if (existing.length === 0) {
-        return { error: `Animation ${id} not found` };
+        // Upsert, not an error: the studio mirrors browser-only projects
+        // into the server scratchpad by id, so a local project the agent
+        // has never seen has no row yet. Creating it here is what lets
+        // the agent load — and then edit — the project currently open.
+        await db.insert(animations).values({
+          id,
+          title,
+          svg,
+          tracks: JSON.stringify(tracks),
+          duration,
+          loop,
+          ownerEmail: ctx?.userEmail ?? null,
+          orgId: ctx?.orgId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return { id, updatedAt: now };
       }
       const currentUpdatedAt = existing[0]?.updatedAt ?? null;
       if (

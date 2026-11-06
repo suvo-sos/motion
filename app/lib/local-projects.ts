@@ -27,14 +27,37 @@ export interface SaveLocalProjectInput {
 }
 
 const STORAGE_KEY = "motion-studio-projects:v1";
+const BACKUP_KEY = "motion-studio-projects:v1.backup";
+const CORRUPT_KEY_PREFIX = "motion-studio-projects:v1.corrupt-";
 const CHANGE_EVENT = "motion-studio-projects:change";
+
+/**
+ * Set when the stored library fails to parse or validate. While set,
+ * writeProjects() refuses to write, so a corruption-read [] can never be
+ * treated as an empty library that the next save overwrites. The raw value
+ * is preserved under a `motion-studio-projects:v1.corrupt-<timestamp>` key
+ * (see quarantineCorruptLibrary) and the original is left in place, so the
+ * corruption is re-detected after a reload until the stored value is fixed.
+ * A successful read clears the flag.
+ */
+let libraryCorrupt = false;
+let corruptBackupKey: string | null = null;
+let lastQuarantinedRaw: string | null = null;
+
+export function isLocalLibraryCorrupt(): boolean {
+  return libraryCorrupt;
+}
+
+export function getLocalLibraryCorruptBackupKey(): string | null {
+  return corruptBackupKey;
+}
 
 /**
  * Hackathon switch. The DB actions, tables, and agent integration stay in the
  * repo, but this build does not write projects to Postgres. Set this to `true`
  * to restore the server scratchpad (agent-created projects + live agent reads).
  */
-const SERVER_SCRATCHPAD_ENABLED = false;
+const SERVER_SCRATCHPAD_ENABLED = true;
 
 export function isServerScratchpadEnabled(): boolean {
   return SERVER_SCRATCHPAD_ENABLED;
@@ -64,15 +87,51 @@ function isLocalProject(value: unknown): value is LocalProject {
   );
 }
 
+function quarantineCorruptLibrary(raw: string): void {
+  libraryCorrupt = true;
+  // Quarantine each distinct raw value once; every read re-detects the same
+  // corrupt value, and without this guard each read would mint a new key.
+  if (raw === lastQuarantinedRaw) return;
+  lastQuarantinedRaw = raw;
+  try {
+    // Each quarantine is a full copy of the library. Keep only the newest
+    // one: older copies are dead weight that can push storage over quota
+    // and make every later save fail with "Browser storage is full".
+    const stale: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key && key.startsWith(CORRUPT_KEY_PREFIX)) stale.push(key);
+    }
+    for (const key of stale) window.localStorage.removeItem(key);
+    const key = `${CORRUPT_KEY_PREFIX}${Date.now()}`;
+    window.localStorage.setItem(key, raw);
+    corruptBackupKey = key;
+  } catch {
+    // Backup is best-effort; the original value is left in place, so the
+    // corruption is re-detected (and re-quarantined) on the next read.
+  }
+}
+
 function readProjects(): LocalProject[] {
   if (!hasStorage()) return [];
+  let raw: string | null = null;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isLocalProject);
+    // Any validation failure quarantines the whole stored value instead of
+    // silently dropping rows: a partial read must never look like an empty
+    // library that the next save overwrites.
+    if (!Array.isArray(parsed) || !parsed.every(isLocalProject)) {
+      quarantineCorruptLibrary(raw);
+      return [];
+    }
+    libraryCorrupt = false;
+    corruptBackupKey = null;
+    return parsed;
   } catch {
+    if (raw) quarantineCorruptLibrary(raw);
+    else libraryCorrupt = true;
     return [];
   }
 }
@@ -91,12 +150,49 @@ function emitChange(): void {
 
 function writeProjects(projects: LocalProject[]): void {
   if (!hasStorage()) return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
-  } catch {
+  // Never let a corruption-read [] feed a write: if the stored library
+  // failed to parse/validate, refuse to overwrite it until it is restored.
+  if (libraryCorrupt) {
     throw new Error(
-      "Browser storage is full. Delete an old project or export it before saving another.",
+      "Project library is damaged and was backed up. Restore it before saving so no projects are lost.",
     );
+  }
+  const payload = JSON.stringify(projects);
+  // Keep a last-good backup before overwriting, so a later corrupt read
+  // never destroys the previous good library. Only a value that parses
+  // and validates is backed up; a corrupt current value must not clobber
+  // the good backup. The backup write is best-effort on its own: a backup
+  // that does not fit must never fail the save itself.
+  try {
+    const previous = window.localStorage.getItem(STORAGE_KEY);
+    if (previous) {
+      try {
+        const prevParsed = JSON.parse(previous) as unknown;
+        if (Array.isArray(prevParsed) && prevParsed.every(isLocalProject)) {
+          window.localStorage.setItem(BACKUP_KEY, previous);
+        }
+      } catch {
+        // Unparseable current value, or a backup that does not fit:
+        // leave the existing backup alone and continue to the save.
+      }
+    }
+  } catch {
+    // Reading storage failed; continue to the main write below.
+  }
+  try {
+    window.localStorage.setItem(STORAGE_KEY, payload);
+  } catch {
+    // The backup holds a full second copy of the library. Dropping it
+    // frees roughly half the used space, so retry once before giving up:
+    // a full disk should cost the backup, not the user's edits.
+    try {
+      window.localStorage.removeItem(BACKUP_KEY);
+      window.localStorage.setItem(STORAGE_KEY, payload);
+    } catch {
+      throw new Error(
+        "Browser storage is full. Delete an old project or export it before saving another.",
+      );
+    }
   }
   emitChange();
 }
@@ -190,7 +286,7 @@ export function importLocalProject(animation: MotionAnimation & {
   const next: LocalProject = {
     id: animation.id,
     title: animation.title || "Untitled animation",
-    svg: animation.svg ?? "",
+    svg: sanitizeSvg(animation.svg ?? ""),
     tracks: Array.isArray(animation.tracks) ? animation.tracks : [],
     duration: animation.duration ?? 2000,
     loop: animation.loop ?? true,
@@ -263,13 +359,16 @@ export function useLocalProjects(): {
   projects: LocalProject[];
   isLoading: boolean;
   isFetching: boolean;
+  isCorrupt: boolean;
 } {
   const [projects, setProjects] = useState<LocalProject[]>([]);
   const [ready, setReady] = useState(false);
+  const [isCorrupt, setIsCorrupt] = useState(false);
 
   useEffect(() => {
     const update = () => {
       setProjects(listLocalProjects());
+      setIsCorrupt(isLocalLibraryCorrupt());
       setReady(true);
     };
     update();
@@ -281,7 +380,7 @@ export function useLocalProjects(): {
     };
   }, []);
 
-  return { projects, isLoading: !ready, isFetching: false };
+  return { projects, isLoading: !ready, isFetching: false, isCorrupt };
 }
 
 export function useLocalProject(id: string | null): LocalProject | null {
