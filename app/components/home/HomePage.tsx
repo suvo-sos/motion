@@ -5,6 +5,7 @@ import {
 import { useSession } from "@agent-native/core/client/hooks";
 import { createAgentNativeAgentKitTransport } from "@agent-native/core/client/agentkit-chat/transport";
 import {
+  exportLocalProjects,
   saveLocalProject,
   syncProjectToServer,
   useLocalProjects,
@@ -21,6 +22,7 @@ import {
   IconBolt,
   IconChartBar,
   IconCircleDot,
+  IconDownload,
   IconHeart,
   IconLoader2,
   IconPlanet,
@@ -167,6 +169,7 @@ export default function HomePage() {
   const [uploading, setUploading] = useState(false);
   const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
   const [view, setView] = useState<"projects" | "templates">("templates");
+  const [exportNote, setExportNote] = useState<string | null>(null);
   const { projects, isLoading: projectsLoading } = useLocalProjects();
 
   /**
@@ -242,6 +245,22 @@ export default function HomePage() {
 
 
 
+  /**
+   * The library only exists in this browser, so a downloaded JSON file is the
+   * only backup that can leave it. It is also the input the repo uses to
+   * promote projects into templates.
+   */
+  function handleExport() {
+    try {
+      const { count, filename } = exportLocalProjects();
+      setExportNote(
+        `Exported ${count} project${count === 1 ? "" : "s"} to ${filename}`,
+      );
+    } catch (err) {
+      setExportNote(`Export failed: ${(err as Error)?.message ?? err}`);
+    }
+  }
+
   function start(message: string, options: ChatInitialComposerOptions = {}) {
     rememberLastChatThread(threadId);
     const state: ChatRouteState = {
@@ -297,10 +316,23 @@ export default function HomePage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              {view === "projects"
-                ? "Saved in this browser"
-                : "Every preview is editable · click to add"}
+              {exportNote ??
+                (view === "projects"
+                  ? "Saved in this browser"
+                  : "Every preview is editable · click to add")}
             </span>
+            {view === "projects" && projects.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 px-3 text-xs"
+                onClick={handleExport}
+                title="Download every project as JSON"
+              >
+                <IconDownload className="size-3.5" strokeWidth={1.8} />
+                Export
+              </Button>
+            ) : null}
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <IconUpload
                 className="size-3.5 text-muted-foreground"

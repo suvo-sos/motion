@@ -250,6 +250,42 @@ export function saveLocalProject(input: SaveLocalProjectInput): {
   return { id, updatedAt: now };
 }
 
+/**
+ * Download the whole browser library as one JSON file.
+ *
+ * The library only lives in this browser, so this is the only way a backup
+ * can leave it — and it is how projects get promoted into templates (see
+ * `scripts/projects-to-templates.mjs`). Reading goes through readProjects(),
+ * so a damaged library throws instead of exporting an empty file that
+ * looks like a valid backup.
+ */
+export function exportLocalProjects(): { count: number; filename: string } {
+  if (!hasStorage()) throw new Error("Browser storage is not available");
+  const projects = listLocalProjects();
+  const payload = JSON.stringify(
+    {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      projects,
+    },
+    null,
+    2,
+  );
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const filename = `motion-studio-projects-${new Date().toISOString().slice(0, 10)}.json`;
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Revoke on the next tick: revoking synchronously cancels the download
+  // in Safari before it has read the blob.
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  return { count: projects.length, filename };
+}
+
 export function deleteLocalProject(id: string): void {
   const projects = readProjects();
   if (!projects.some((project) => project.id === id)) return;

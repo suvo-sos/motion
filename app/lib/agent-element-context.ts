@@ -78,10 +78,18 @@ function shortMentionLabel(element: AgentElementTarget, label: string): string {
   return token.length > 20 ? `${token.slice(0, 19)}…` : token;
 }
 
-/** The prompt composer's Tiptap contenteditable, once the sidebar has mounted. */
+/** The prompt composer's Tiptap contenteditable, once the sidebar has mounted.
+ * Prefer the editor inside the agent composer itself: a document-wide query
+ * can return a different contenteditable first, and then the landed-chip
+ * check looks in the wrong editor, misses the chip, and inserts it again. */
 function findComposerEditor(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(
-    ".ProseMirror[contenteditable=\"true\"], [contenteditable=\"true\"]",
+  return (
+    document.querySelector<HTMLElement>(
+      ".agentkit-composer .ProseMirror[contenteditable=\"true\"], .agent-kit-chat-footer-stack .ProseMirror[contenteditable=\"true\"]",
+    ) ??
+    document.querySelector<HTMLElement>(
+      ".ProseMirror[contenteditable=\"true\"], [contenteditable=\"true\"]",
+    )
   );
 }
 
@@ -165,6 +173,26 @@ function hasElementChip(editor: HTMLElement, id: string): boolean {
 }
 
 /**
+ * True when the prompt already mentions this element — as a chip, as its
+ * visible label, or as plain text. The chip label is shortened past 20
+ * chars, so a text match must accept the short label too: checking only
+ * the data attribute (or only the full token) cannot see a landed chip
+ * and the retry inserts it a second time.
+ */
+function isElementMentioned(
+  editor: HTMLElement,
+  element: AgentElementTarget,
+  label: string,
+): boolean {
+  const id = element.id;
+  if (!id) return false;
+  if (hasElementChip(editor, id)) return true;
+  const text = editor.textContent || "";
+  if (text.includes(`#${id}`)) return true;
+  return text.includes(shortMentionLabel(element, label));
+}
+
+/**
  * Append a plain-text element token for every target whose id is not already
  * in the prompt. This is only a safety net for a composer that mounted too
  * late to accept the chips; when the mention batch lands, every target is
@@ -177,10 +205,8 @@ function appendMissingElementTokens(
   for (const item of targets) {
     const id = item.element.id;
     if (!id) continue;
-    if (hasElementChip(editor, id)) continue;
-    const token = `#${id}`;
-    if ((editor.textContent || "").includes(token)) continue;
-    insertPlainTextToken(editor, token);
+    if (isElementMentioned(editor, item.element, item.label)) continue;
+    insertPlainTextToken(editor, `#${id}`);
   }
 }
 
@@ -215,16 +241,29 @@ export function askAgentAboutElements({
   focusAgentChat();
 
   // Give the lazy sidebar a moment to mount; retry only the chips that did
-  // not land, then fall back to plain text for anything still missing.
-  window.setTimeout(() => {
+  // not land, then fall back to plain text for anything still missing. A
+  // slow mount is not a failed insert, so check a few times before
+  // re-inserting — re-inserting too early is how one tag becomes two.
+  let attempt = 0;
+  const retryMissing = () => {
     const editor = findComposerEditor();
     if (!editor) return;
     const missing = targets.filter(
       (item) =>
-        item.element.id && !hasElementChip(editor, item.element.id),
+        item.element.id &&
+        !isElementMentioned(editor, item.element, item.label),
     );
     if (missing.length === 0) return;
+    if (attempt < 2) {
+      attempt += 1;
+      window.setTimeout(retryMissing, 400);
+      return;
+    }
     for (const item of missing) {
+      // Re-check right before inserting: the editor may have caught up
+      // between the filter and this insert.
+      const now = findComposerEditor();
+      if (now && isElementMentioned(now, item.element, item.label)) continue;
       insertAgentComposerReference(
         composerReferenceFor(item.element, item.label),
         { openSidebar: true },
@@ -236,7 +275,8 @@ export function askAgentAboutElements({
       if (!retryEditor) return;
       appendMissingElementTokens(retryEditor, targets);
     }, 400);
-  }, 400);
+  };
+  window.setTimeout(retryMissing, 400);
 }
 
 /**

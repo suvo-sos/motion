@@ -1,5 +1,6 @@
 import type { Track } from "./motion";
 import { IMPORTED_TEMPLATES } from "./imported-templates.generated";
+import { USER_TEMPLATES } from "./user-templates.generated";
 
 /**
  * Prebuilt starter projects.
@@ -57,6 +58,16 @@ const easeIn = "cubic-bezier(0.55, 0, 1, 0.45)";
 const easeInOut = "cubic-bezier(0.65, 0, 0.35, 1)";
 
 export const MOTION_TEMPLATES: MotionTemplate[] = [
+  /* ------------------------------------------------------------------ *
+   * The studio's own projects, promoted to templates — see
+   * lib/user-templates.generated.ts. They lead the gallery: these are the
+   * animations the user actually made.
+   * ------------------------------------------------------------------ */
+  ...USER_TEMPLATES.map((template) => ({
+    ...template,
+    icon: template.icon as TemplateIconName,
+  })),
+
   /* ------------------------------------------------------------------ *
    * Imported SVG exports — see lib/imported-templates.generated.ts.
    * Kept first so the richest previews open the gallery.
