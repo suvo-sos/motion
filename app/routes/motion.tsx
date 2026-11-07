@@ -148,6 +148,7 @@ import {
   type Track,
 } from "../../lib/motion";
 import { runExport, type ExportFormat, type ExportRenderOptions } from "../../lib/export";
+import { exportRaster, type RasterExportKind, type RasterExportOptions } from "../../lib/raster-export";
 import { sanitizeSvg } from "../../lib/sanitize";
 import {
   importLocalProject,
@@ -9944,6 +9945,21 @@ function StudioWorkspace({
     toast.success(`Exported ${result.filename}`);
   };
 
+  const handleExportRaster = async (kind: RasterExportKind, options: RasterExportOptions) => {
+    const result = await exportRaster(
+      { ...animation, title, tracks, duration, loop },
+      kind,
+      options,
+    );
+    const url = URL.createObjectURL(result.blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = result.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${result.filename}`);
+  };
+
   // Custom cursor styles - only for precision tools
   const toolCursorStyle = effectiveTool === "pen" 
     ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M15 2 L18 5 L8 15 L5 15 L5 12 Z M13 4 L16 7' fill='%23fff' stroke='%232391FF' stroke-width='1.5' stroke-linejoin='round'/%3E%3Ccircle cx='5.5' cy='14.5' r='1' fill='%232391FF'/%3E%3C/svg%3E") 5 15, crosshair`
@@ -10988,6 +11004,7 @@ function StudioWorkspace({
         onExport={(format, options) => {
           handleExport(format, options);
         }}
+        onExportRaster={(kind, options) => handleExportRaster(kind, options)}
       />
       {imagePromptDialog}
     </div>

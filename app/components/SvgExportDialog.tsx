@@ -15,6 +15,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toAnimatedSvg } from "../../lib/motion";
 import type { MotionAnimation } from "../../lib/motion";
+import type { RasterExportOptions } from "../../lib/raster-export";
 
 export interface SvgExportOptions {
   type: "js" | "css";
@@ -52,6 +53,12 @@ interface Props {
   loop: boolean;
   onClose: () => void;
   onExport: (format: "svg" | "webcss" | "js" | "copy", options: SvgExportOptions) => void;
+  /** Raster export (GIF / video) is async and reports progress, so it gets
+      its own callback instead of sharing the sync onExport path. */
+  onExportRaster?: (
+    kind: "gif" | "video",
+    options: RasterExportOptions,
+  ) => Promise<void>;
 }
 
 const QUALITY_PRESETS = {
@@ -93,8 +100,8 @@ const QUALITY_PRESETS = {
   },
 };
 
-export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loopProp, onClose, onExport }: Props) {
-  const [format, setFormat] = React.useState<"svg" | "webcss" | "js" | "copy">("svg");
+export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loopProp, onClose, onExport, onExportRaster }: Props) {
+  const [format, setFormat] = React.useState<"svg" | "webcss" | "js" | "copy" | "gif" | "video">("svg");
   const [preset, setPreset] = React.useState<keyof typeof QUALITY_PRESETS>("web");
   const [hyperlink, setHyperlink] = React.useState("");
   const [responsive, setResponsive] = React.useState(true);
@@ -125,6 +132,15 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
   
   
   const [copied, setCopied] = React.useState(false);
+  // Raster (GIF / video) export runs async and takes seconds, so the dialog
+  // stays open with progress instead of closing on click.
+  const [rasterBusy, setRasterBusy] = React.useState(false);
+  const [rasterProgress, setRasterProgress] = React.useState<{
+    done: number;
+    total: number;
+    stage: string;
+  } | null>(null);
+  const [rasterError, setRasterError] = React.useState<string | null>(null);
   const [estimatedSize, setEstimatedSize] = React.useState({ original: 0, optimized: 0 });
 
   React.useEffect(() => {
@@ -191,6 +207,7 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
   if (!open) return null;
 
   const isAnimated = format !== "copy";
+  const isRaster = format === "gif" || format === "video";
   const showResponsive = format === "webcss" || format === "js";
   
   const formatBytes = (bytes: number) => {
@@ -214,12 +231,60 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
     }
   };
 
+  const handleFormatChange = (value: typeof format) => {
+    setFormat(value);
+    // Raster formats render at fixed frame rates — pick the sensible
+    // default instead of leaving the 60 fps JS default, which would make
+    // a huge GIF.
+    if (value === "gif") setFrameRate(15);
+    if (value === "video") setFrameRate(30);
+    // Raster exports always need dimensions (the Scale slider) — a
+    // leftover "remove dimensions" would hide it.
+    if (value === "gif" || value === "video") setRemoveDimensions(false);
+    setRasterError(null);
+  };
+
+  const handleRasterExport = async (kind: "gif" | "video") => {
+    if (!onExportRaster) {
+      setRasterError("GIF / video export is not wired up in this build.");
+      return;
+    }
+    setRasterError(null);
+    setRasterBusy(true);
+    setRasterProgress({ done: 0, total: 1, stage: "Starting…" });
+    try {
+      await onExportRaster(kind, {
+        fps:
+          kind === "gif"
+            ? Math.min(Math.max(frameRate, 10), 30)
+            : Math.min(Math.max(frameRate, 15), 60),
+        scale,
+        canvasBg: bgNone ? "none" : canvasBg,
+        loop,
+        speed,
+        filename,
+        onProgress: (done, total, stage) =>
+          setRasterProgress({ done, total, stage }),
+      });
+      onClose();
+    } catch (err) {
+      setRasterError(err instanceof Error ? err.message : "Export failed.");
+    } finally {
+      setRasterBusy(false);
+      setRasterProgress(null);
+    }
+  };
+
   const handleExportClick = () => {
     if (format === "copy") {
       handleCopyToClipboard();
       return;
     }
-    
+    if (format === "gif" || format === "video") {
+      void handleRasterExport(format);
+      return;
+    }
+
     onExport(format, {
       type: format === "webcss" ? "css" : "js",
       hyperlink,
@@ -319,12 +384,14 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                         { value: "svg", label: "SVG", desc: "Optimized vector" },
                         { value: "webcss", label: "HTML+CSS", desc: "Web ready" },
                         { value: "js", label: "JavaScript", desc: "Interactive" },
+                        { value: "gif", label: "GIF", desc: "Looping image" },
+                        { value: "video", label: "Video", desc: "WebM / MP4" },
                         { value: "copy", label: "Copy Code", desc: "To clipboard" },
                       ] as const).map((opt) => (
                         <button
                           key={opt.value}
                           type="button"
-                          onClick={() => setFormat(opt.value)}
+                          onClick={() => handleFormatChange(opt.value)}
                           className={`flex flex-col items-start rounded-lg border px-3 py-2.5 text-left transition-all ${
                             format === opt.value
                               ? "border-blue-500 bg-blue-500/10 shadow-sm"
@@ -337,6 +404,14 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                       ))}
                     </div>
                   </div>
+
+                  {isRaster && (
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {format === "gif"
+                        ? "GIF renders at up to 30 fps in 256 colours. A transparent background is filled with the canvas colour."
+                        : "Video records in real time — a 10s animation takes about 10s. WebM in Chrome/Firefox, MP4 in Safari."}
+                    </p>
+                  )}
 
                   <div className="space-y-2">
                     <Label className="text-sm font-medium">Filename</Label>
@@ -353,13 +428,15 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                       <div className="space-y-2">
                         <Label className="text-sm font-medium">Dimensions</Label>
                         <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Checkbox 
-                              checked={removeDimensions} 
-                              onCheckedChange={(c) => setRemoveDimensions(Boolean(c))} 
-                            />
-                            <Label className="text-xs font-normal">Remove width/height (responsive)</Label>
-                          </div>
+                          {!isRaster && (
+                            <div className="flex items-center gap-2">
+                              <Checkbox 
+                                checked={removeDimensions} 
+                                onCheckedChange={(c) => setRemoveDimensions(Boolean(c))} 
+                              />
+                              <Label className="text-xs font-normal">Remove width/height (responsive)</Label>
+                            </div>
+                          )}
                           {!removeDimensions && (
                             <div className="space-y-1.5 pl-6">
                               <div className="flex items-center justify-between">
@@ -379,8 +456,9 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-sm font-medium">Accessibility</Label>
+                      {!isRaster && (
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">Accessibility</Label>
                         <Input
                           value={svgTitle}
                           onChange={(e) => setSvgTitle(e.target.value)}
@@ -400,7 +478,8 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                           />
                           <Label className="text-xs font-normal">Add ARIA labels</Label>
                         </div>
-                      </div>
+                        </div>
+                      )}
                     </>
                   )}
                 </TabsContent>
@@ -532,18 +611,20 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                         />
                       </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-sm font-medium">Start trigger</Label>
-                        <Select value={trigger} onValueChange={(v) => setTrigger(v as "load" | "hover")}>
-                          <SelectTrigger className="h-9 text-sm">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="load" className="text-sm">On page load</SelectItem>
-                            <SelectItem value="hover" className="text-sm">On mouse hover</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      {!isRaster && (
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">Start trigger</Label>
+                          <Select value={trigger} onValueChange={(v) => setTrigger(v as "load" | "hover")}>
+                            <SelectTrigger className="h-9 text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="load" className="text-sm">On page load</SelectItem>
+                              <SelectItem value="hover" className="text-sm">On mouse hover</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
 
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between">
@@ -576,22 +657,24 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                         </div>
                       </div>
 
-                      {showResponsive && (
+                      {showResponsive && !isRaster && (
                         <div className="flex items-center gap-2">
                           <Checkbox checked={responsive} onCheckedChange={(c) => setResponsive(Boolean(c))} />
                           <Label className="text-sm font-medium">Responsive sizing</Label>
                         </div>
                       )}
 
-                      <div className="space-y-2">
-                        <Label className="text-sm font-medium">Hyperlink (optional)</Label>
-                        <Input
-                          value={hyperlink}
-                          onChange={(e) => setHyperlink(e.target.value)}
-                          placeholder="https://example.com"
-                          className="h-9 text-sm"
-                        />
-                      </div>
+                      {!isRaster && (
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">Hyperlink (optional)</Label>
+                          <Input
+                            value={hyperlink}
+                            onChange={(e) => setHyperlink(e.target.value)}
+                            placeholder="https://example.com"
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                      )}
                     </>
                   )}
                 </TabsContent>
@@ -625,6 +708,25 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
               </div>
               
               <div className="shrink-0 border-t border-border px-4 py-3">
+                {rasterProgress && (
+                  <div className="mb-2 space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">{rasterProgress.stage}</span>
+                      <span className="font-medium">
+                        {rasterProgress.done}/{rasterProgress.total}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full bg-blue-600 transition-all"
+                        style={{ width: `${Math.round((rasterProgress.done / Math.max(1, rasterProgress.total)) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {rasterError && (
+                  <p className="mb-2 text-xs leading-relaxed text-red-600 dark:text-red-400">{rasterError}</p>
+                )}
                 <div className="flex gap-2">
                   {format !== "copy" && (
                     <Button
@@ -648,6 +750,7 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                   <Button
                     className="h-10 flex-1 bg-blue-600 text-white hover:bg-blue-700"
                     onClick={handleExportClick}
+                    disabled={rasterBusy}
                   >
                     {format === "copy" ? (
                       <>
@@ -657,7 +760,9 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                     ) : (
                       <>
                         <IconDownload className="mr-2 size-4" />
-                        Export {format.toUpperCase()}
+                        {rasterBusy
+                          ? "Exporting…"
+                          : `Export ${format === "video" ? "Video" : format.toUpperCase()}`}
                       </>
                     )}
                   </Button>
