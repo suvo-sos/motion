@@ -19,4 +19,844 @@ export interface UserTemplateData {
   tracks: Track[];
 }
 
-export const USER_TEMPLATES: UserTemplateData[] = [];
+export const USER_TEMPLATES: UserTemplateData[] = [
+  {
+    "id": "apple-fruit-drop-to-logo-reveal",
+    "label": "Apple Fruit Drop to Logo Reveal",
+    "hint": "17 elements · 1.5s loop",
+    "icon": "ball",
+    "src": "/templates/apple-fruit-drop-to-logo-reveal.svg",
+    "width": 600,
+    "height": 600,
+    "duration": 1500,
+    "loop": true,
+    "tracks": [
+      {
+        "target": "scene-drop",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 1,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.32,
+            "v": 1,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.36,
+            "v": 0,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.95,
+            "v": 0,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 1,
+            "v": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      {
+        "target": "dropping-apple",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "ease-in"
+          },
+          {
+            "t": 0.04,
+            "v": 0,
+            "ease": "cubic-bezier(0.5, 0, 0.75, 0)"
+          },
+          {
+            "t": 0.24,
+            "v": 130,
+            "ease": "cubic-bezier(0.2, 0.8, 0.3, 1)"
+          },
+          {
+            "t": 0.28,
+            "v": 112,
+            "ease": "cubic-bezier(0.4, 0, 0.2, 1)"
+          },
+          {
+            "t": 0.32,
+            "v": 130,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 130,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      {
+        "target": "dropping-apple",
+        "property": "rotate",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.05,
+            "v": 0,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.24,
+            "v": 5,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.28,
+            "v": -15,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.32,
+            "v": 10,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      {
+        "target": "bonk-fx",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.23,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.24,
+            "v": 1,
+            "ease": "ease-out"
+          },
+          {
+            "t": 0.3,
+            "v": 0,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "skel-head",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.24,
+            "v": 0,
+            "ease": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+          },
+          {
+            "t": 0.27,
+            "v": 14,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 0.32,
+            "v": 0,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "skel-spine",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.24,
+            "v": 0,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 0.27,
+            "v": 8,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 0.32,
+            "v": 0,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "hero-apple-stage",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.33,
+            "v": 0,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 0.36,
+            "v": 1,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 0.94,
+            "v": 1,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 0.98,
+            "v": 0,
+            "ease": "ease-in-out"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "hero-apple-stage",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0.34,
+            "v": 0.25,
+            "ease": "cubic-bezier(0.12, 0.8, 0.32, 1)"
+          },
+          {
+            "t": 0.44,
+            "v": 1.15,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 0.48,
+            "v": 1,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 1,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "hero-apple-stage",
+        "property": "originX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 50,
+            "ease": "linear"
+          },
+          {
+            "t": 1,
+            "v": 50,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "hero-apple-stage",
+        "property": "originY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 50,
+            "ease": "linear"
+          },
+          {
+            "t": 1,
+            "v": 50,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "hero-fruit",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 1,
+            "ease": "linear"
+          },
+          {
+            "t": 0.52,
+            "v": 1,
+            "ease": "linear"
+          },
+          {
+            "t": 0.53,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "blade-swipe",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.5,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.52,
+            "v": 1,
+            "ease": "ease-out"
+          },
+          {
+            "t": 0.57,
+            "v": 0,
+            "ease": "ease-in"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "blade-slash-line",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0.5,
+            "v": -350,
+            "ease": "cubic-bezier(0.1, 0.9, 0.2, 1)"
+          },
+          {
+            "t": 0.56,
+            "v": 350,
+            "ease": "cubic-bezier(0.1, 0.9, 0.2, 1)"
+          },
+          {
+            "t": 1,
+            "v": 350,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "blade-slash-line",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0.5,
+            "v": -350,
+            "ease": "cubic-bezier(0.1, 0.9, 0.2, 1)"
+          },
+          {
+            "t": 0.56,
+            "v": 350,
+            "ease": "cubic-bezier(0.1, 0.9, 0.2, 1)"
+          },
+          {
+            "t": 1,
+            "v": 350,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-group",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.52,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.53,
+            "v": 1,
+            "ease": "linear"
+          },
+          {
+            "t": 1,
+            "v": 1,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-group",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0.53,
+            "v": 0.88,
+            "ease": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+          },
+          {
+            "t": 0.62,
+            "v": 1.06,
+            "ease": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+          },
+          {
+            "t": 0.68,
+            "v": 1,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 1,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-group",
+        "property": "originX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 50,
+            "ease": "linear"
+          },
+          {
+            "t": 1,
+            "v": 50,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-group",
+        "property": "originY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 45,
+            "ease": "linear"
+          },
+          {
+            "t": 1,
+            "v": 45,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-bite-chunk",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.53,
+            "v": 1,
+            "ease": "linear"
+          },
+          {
+            "t": 0.64,
+            "v": 0,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-bite-chunk",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0.53,
+            "v": 0,
+            "ease": "ease-out"
+          },
+          {
+            "t": 0.64,
+            "v": 80,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 1,
+            "v": 80,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-bite-chunk",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0.53,
+            "v": 0,
+            "ease": "ease-out"
+          },
+          {
+            "t": 0.64,
+            "v": -30,
+            "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+          },
+          {
+            "t": 1,
+            "v": -30,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-bite-chunk",
+        "property": "rotate",
+        "keyframes": [
+          {
+            "t": 0.53,
+            "v": 0,
+            "ease": "ease-out"
+          },
+          {
+            "t": 0.64,
+            "v": 45,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 45,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-text-group",
+        "property": "opacity",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.66,
+            "v": 0,
+            "ease": "linear"
+          },
+          {
+            "t": 0.76,
+            "v": 1,
+            "ease": "ease-out"
+          },
+          {
+            "t": 1,
+            "v": 1,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-text-group",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0.66,
+            "v": 25,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 0.78,
+            "v": 0,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 1,
+            "v": 0,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "apple-text-group",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0.66,
+            "v": 0.92,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 0.78,
+            "v": 1,
+            "ease": "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            "t": 1,
+            "v": 1,
+            "ease": "linear"
+          }
+        ]
+      },
+      {
+        "target": "foliage-1",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 8
+          },
+          {
+            "t": 1,
+            "v": 8
+          }
+        ]
+      },
+      {
+        "target": "foliage-1",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -39
+          },
+          {
+            "t": 1,
+            "v": -39
+          }
+        ]
+      },
+      {
+        "target": "foliage-1",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0.734
+          },
+          {
+            "t": 1,
+            "v": 0.734
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-body",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -39
+          },
+          {
+            "t": 1,
+            "v": -39
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-body",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -37
+          },
+          {
+            "t": 1,
+            "v": -37
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-body",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0.717
+          },
+          {
+            "t": 1,
+            "v": 0.717
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-leaf",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -14
+          },
+          {
+            "t": 1,
+            "v": -14
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-leaf",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -25
+          },
+          {
+            "t": 1,
+            "v": -25
+          }
+        ]
+      },
+      {
+        "target": "skel-leg-l",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -1
+          },
+          {
+            "t": 1,
+            "v": -1
+          }
+        ]
+      },
+      {
+        "target": "skel-leg-l",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -1
+          },
+          {
+            "t": 1,
+            "v": -1
+          }
+        ]
+      },
+      {
+        "target": "skel-leg-l",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0.972
+          },
+          {
+            "t": 1,
+            "v": 0.972
+          }
+        ]
+      },
+      {
+        "target": "apple-word",
+        "property": "translateX",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 9
+          },
+          {
+            "t": 1,
+            "v": 9
+          }
+        ]
+      },
+      {
+        "target": "apple-word",
+        "property": "translateY",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": -91
+          },
+          {
+            "t": 1,
+            "v": -91
+          }
+        ]
+      },
+      {
+        "target": "apple-logo-leaf",
+        "property": "scale",
+        "keyframes": [
+          {
+            "t": 0,
+            "v": 0.885
+          },
+          {
+            "t": 1,
+            "v": 0.885
+          }
+        ]
+      }
+    ]
+  },
+];

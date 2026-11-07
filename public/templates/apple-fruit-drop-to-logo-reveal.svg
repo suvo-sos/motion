@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs id="defs-ty66">
+    <!-- Background subtle gradient if needed, but everything requested is black monochrome styling -->
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect id="bg" width="600" height="600" fill="#f5f5f7"/>
+
+  <!-- SCENE 1: TREE + SKELETON + FALLING APPLE -->
+  <g id="scene-drop">
+    <!-- Ground Line -->
+    <path id="ground" d="M40 520 L560 520" stroke="#111111" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Tree: Trunk & Branches on the left curving over -->
+    <g id="tree-group">
+      <!-- Trunk -->
+      <path id="tree-trunk" d="M110 520 C105 440 95 360 135 290 C165 240 215 220 280 200 C340 180 410 170 470 175" fill="none" stroke="#111111" stroke-width="22" stroke-linecap="round"/>
+      <!-- Branch splits -->
+      <path id="tree-b1" d="M125 330 C80 300 70 240 85 190 C95 150 140 130 180 140" fill="none" stroke="#111111" stroke-width="12" stroke-linecap="round"/>
+      <path id="tree-b2" d="M210 235 C230 170 290 140 350 135" fill="none" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+      <path id="tree-b3" d="M330 190 C360 140 420 125 460 130" fill="none" stroke="#111111" stroke-width="8" stroke-linecap="round"/>
+
+      <!-- Minimal foliage blobs (solid black silhouettes) -->
+      <path id="foliage-1" d="M60 200 C50 140 110 110 160 120 C200 80 280 90 310 130 C360 90 440 100 470 140 C520 130 545 175 510 215 C470 250 420 220 380 225 C330 250 250 240 210 245 C150 260 90 250 60 200 Z" fill="#111111"/>
+    </g>
+
+    <!-- Skeleton / Stickman Sitting at Bottom under the tree -->
+    <g id="skel-guy">
+      <!-- Head / Skull -->
+      <circle id="skel-head" cx="370" cy="340" r="22" fill="#111111"/>
+      <!-- Eye socket cutouts for skeleton vibe -->
+      <circle id="skel-eye-l" cx="363" cy="338" r="3.5" fill="#f5f5f7"/>
+      <circle id="skel-eye-r" cx="377" cy="338" r="3.5" fill="#f5f5f7"/>
+      <!-- Spine / Torso -->
+      <path id="skel-spine" d="M370 362 L370 445" stroke="#111111" stroke-width="6" stroke-linecap="round"/>
+      <!-- Ribs -->
+      <path id="skel-rib1" d="M356 385 Q370 393 384 385" stroke="#111111" stroke-width="3" stroke-linecap="round"/>
+      
+      
+      <!-- Sitting Pelvis & Legs bent sitting on ground -->
+      <!-- Left leg folded -->
+      <path id="skel-leg-l" d="M370 445 L350 485 L345 518 L325 518" fill="none" stroke="#111111" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Right leg stretched / bent -->
+      <path id="skel-leg-r" d="M370 445 L390 485 L395 518 L415 518" fill="none" stroke="#111111" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Arms resting on knees -->
+      <path id="skel-arm-l" d="M370 372 L346 398 L348 438" fill="none" stroke="#111111" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path id="skel-arm-r" d="M370 372 L394 398 L392 438" fill="none" stroke="#111111" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Bonk impact stars / lines at head -->
+    <g id="bonk-fx" opacity="0">
+      <path d="M340 375 L350 382 M370 365 L370 375 M395 372 L385 382" stroke="#111111" stroke-width="3.5" stroke-linecap="round" id="path-l9h8"/>
+    </g>
+
+    <!-- Dropping Apple from tree -->
+    <g id="dropping-apple">
+      <!-- Apple Fruit body -->
+      <path id="drop-apple-body" d="M370 190 C364 185 354 187 350 195 C344 207 352 225 365 228 C368 229 370 227 372 227 C374 227 376 229 379 228 C392 225 400 207 394 195 C390 187 380 185 374 190 C372 192 371 192 370 190 Z" fill="#111111"/>
+      <!-- Leaf & Stem -->
+      <path id="drop-apple-stem" d="M371 189 C372 181 377 176 382 174" fill="none" stroke="#111111" stroke-width="2.5" stroke-linecap="round"/>
+      <path id="drop-apple-leaf" d="M382 174 C388 174 393 178 392 183 C386 183 382 179 382 174 Z" fill="#111111"/>
+    </g>
+  </g>
+
+  <!-- SCENE 2 & 3: SUPER ZOOMED APPLE -> BLADE SWIPE CUTS -> APPLE LOGO + TEXT -->
+  <g id="hero-apple-stage" opacity="0">
+    <!-- Whole Apple Fruit (Zoomed in center 300, 260) -->
+    <g id="hero-fruit" transform="translate(0 0)">
+      <!-- Natural fruit shape before slice -->
+      <path id="hero-fruit-full" d="M300 160 C269 160 241 181 225 213 C197 270 211 352 253 400 C273 423 299 430 320 419 C333 412 347 412 360 419 C381 430 407 423 427 400 C469 352 483 270 455 213 C439 181 411 160 380 160 C359 160 346 172 340 177 C334 172 321 160 300 160 Z" fill="#111111"/>
+      <!-- Hero Leaf -->
+      <path id="hero-fruit-leaf" d="M340 177 C340 145 359 119 392 111 C394 141 374 166 340 177 Z" fill="#111111"/>
+    </g>
+
+    <!-- Blade Swipe Slashing FX (Rapid diagonal white blade streaks) -->
+    <g id="blade-swipe" opacity="0">
+      <polygon id="blade-beam-1" points="650,-50 550,-50 -50,550 -50,650" fill="#111111" opacity="0.9"/>
+      <line id="blade-slash-line" x1="620" y1="-20" x2="-20" y2="620" stroke="#f5f5f7" stroke-width="12" stroke-linecap="round"/>
+      <polygon id="blade-flash" points="0,0 600,0 600,600 0,600" fill="#111111" opacity="0"/>
+    </g>
+
+    <!-- Apple Brand Logo (Iconic Apple with right-side bite) -->
+    <g id="apple-logo-group" opacity="0">
+      <!-- Iconic Apple Silhouette with bite -->
+      <path id="apple-logo-body" d="M298 160 C265 160 238 181 223 212 C194 268 209 356 253 402 C274 424 297 427 318 418 C339 409 362 409 383 418 C404 427 427 424 447 402 C466 381 480 352 487 325 C434 299 423 226 478 198 C462 174 436 160 406 160 C380 160 357 173 341 173 C325 173 313 160 298 160 Z" fill="#111111"/>
+      <!-- Apple Leaf tilted -->
+      <path id="apple-logo-leaf" d="M 312 183.43 C 359.58 171.6 359.58 140.89 354.35 113.87 C 323.82 122.64 310.22 156.74 312 183.43 Z" fill="#111111"/>
+      <!-- Bite chunk flying off from cut -->
+      <path id="apple-bite-chunk" d="M478 198 C423 226 434 299 487 325 C495 290 500 240 478 198 Z" fill="#111111" opacity="0"/>
+    </g>
+
+    <!-- Apple Brand Text -->
+    <g id="apple-text-group" opacity="0">
+      <text id="apple-word" x="300" y="500" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif" font-size="44" font-weight="600" fill="#111111" text-anchor="middle" letter-spacing="-1">Apple</text>
+    </g>
+  </g>
+</svg>

@@ -92,6 +92,9 @@ function artboardSize(svg) {
 /** Existing gallery labels, so a re-run does not duplicate a card. */
 function existingTemplateLabels() {
   const labels = new Set();
+  // Deliberately not scanning lib/user-templates.generated.ts: that file is
+  // this script's own output, so its labels would make a re-run skip (and
+  // drop) everything it generated last time.
   for (const file of ["lib/templates.ts", "lib/imported-templates.generated.ts"]) {
     const text = fs.readFileSync(path.join(ROOT, file), "utf8");
     for (const match of text.matchAll(/\blabel:\s*"([^"]+)"/g)) {
