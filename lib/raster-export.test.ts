@@ -4,6 +4,7 @@ import {
   artboardSize,
   frameTime,
   rasterFrameCount,
+  supportedVideoFormats,
 } from "./raster-export";
 
 // Only the pure helpers are tested here: the frame renderer and the
@@ -36,6 +37,12 @@ describe("frameTime", () => {
   it("returns 0 for a single frame", () => {
     expect(frameTime(0, 1, true)).toBe(0);
     expect(frameTime(0, 1, false)).toBe(0);
+  });
+});
+
+describe("supportedVideoFormats", () => {
+  it("reports no recordable format where MediaRecorder does not exist", () => {
+    expect(supportedVideoFormats()).toEqual([]);
   });
 });
 

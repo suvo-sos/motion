@@ -15,7 +15,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toAnimatedSvg } from "../../lib/motion";
 import type { MotionAnimation } from "../../lib/motion";
-import type { RasterExportOptions } from "../../lib/raster-export";
+import {
+  supportedVideoFormats,
+  type RasterExportOptions,
+  type VideoFormat,
+} from "../../lib/raster-export";
 
 export interface SvgExportOptions {
   type: "js" | "css";
@@ -102,6 +106,14 @@ const QUALITY_PRESETS = {
 
 export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loopProp, onClose, onExport, onExportRaster }: Props) {
   const [format, setFormat] = React.useState<"svg" | "webcss" | "js" | "copy" | "gif" | "video">("svg");
+  // Video container. Defaults to the first format this browser can
+  // record (WebM in Chrome/Firefox, MP4 in Safari); the picker only
+  // offers what is actually supported. Safe during SSR — with no
+  // MediaRecorder the list is empty and the default is WebM.
+  const [videoFormat, setVideoFormat] = React.useState<VideoFormat>(
+    () => supportedVideoFormats()[0] ?? "webm",
+  );
+  const supportedFormats = React.useMemo(() => supportedVideoFormats(), []);
   const [preset, setPreset] = React.useState<keyof typeof QUALITY_PRESETS>("web");
   const [hyperlink, setHyperlink] = React.useState("");
   const [responsive, setResponsive] = React.useState(true);
@@ -263,6 +275,7 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
         loop,
         speed,
         filename,
+        videoFormat,
         onProgress: (done, total, stage) =>
           setRasterProgress({ done, total, stage }),
       });
@@ -411,6 +424,41 @@ export function SvgExportDialog({ open, svg, title, duration, tracks, loop: loop
                         ? "GIF renders at up to 30 fps in 256 colours. A transparent background is filled with the canvas colour."
                         : "Video records in real time — a 10s animation takes about 10s. WebM in Chrome/Firefox, MP4 in Safari."}
                     </p>
+                  )}
+
+                  {format === "video" && (
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Video format</Label>
+                      <Select
+                        value={videoFormat}
+                        onValueChange={(v) => setVideoFormat(v as VideoFormat)}
+                      >
+                        <SelectTrigger className="h-9 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem
+                            value="webm"
+                            disabled={!supportedFormats.includes("webm")}
+                            className="text-sm"
+                          >
+                            WebM — Chrome, Firefox
+                          </SelectItem>
+                          <SelectItem
+                            value="mp4"
+                            disabled={!supportedFormats.includes("mp4")}
+                            className="text-sm"
+                          >
+                            MP4 — Safari
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {!supportedFormats.includes("mp4") && (
+                        <p className="text-xs text-muted-foreground">
+                          MP4 recording is not supported in this browser — Chrome and Firefox record WebM only. The file still plays in any browser or video player.
+                        </p>
+                      )}
+                    </div>
                   )}
 
                   <div className="space-y-2">

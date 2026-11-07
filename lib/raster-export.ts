@@ -25,6 +25,11 @@ import { sanitizeSvg } from "./sanitize";
 
 export type RasterExportKind = "gif" | "video";
 
+/** Container the video is recorded in. What a browser can record is
+ * fixed: Chrome/Firefox do WebM, Safari does MP4. Asking for a format
+ * the browser cannot record falls back to one it can. */
+export type VideoFormat = "webm" | "mp4";
+
 export interface RasterExportOptions {
   fps?: number | undefined;
   scale?: number | undefined;
@@ -33,6 +38,7 @@ export interface RasterExportOptions {
   loop?: boolean | undefined;
   speed?: number | undefined;
   filename?: string | undefined;
+  videoFormat?: VideoFormat | undefined;
   onProgress?: ((done: number, total: number, stage: string) => void) | undefined;
 }
 
@@ -225,20 +231,36 @@ async function exportGif(
   return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
 }
 
-function pickVideoMimeType(): string {
+function isMimeSupported(mime: string): boolean {
+  if (typeof MediaRecorder === "undefined") return false;
+  try {
+    return MediaRecorder.isTypeSupported(mime);
+  } catch {
+    // isTypeSupported throwing means "not supported" here.
+    return false;
+  }
+}
+
+/** Video containers this browser can actually record, in preference
+ * order. Empty where MediaRecorder does not exist (Node, old browsers). */
+export function supportedVideoFormats(): VideoFormat[] {
+  const formats: VideoFormat[] = [];
+  if (isMimeSupported("video/webm")) formats.push("webm");
+  if (isMimeSupported("video/mp4")) formats.push("mp4");
+  return formats;
+}
+
+function pickVideoMimeType(preferred?: VideoFormat): string {
   if (typeof MediaRecorder === "undefined") return "";
-  const candidates = [
+  const webm = [
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
-    "video/mp4",
   ];
-  for (const candidate of candidates) {
-    try {
-      if (MediaRecorder.isTypeSupported(candidate)) return candidate;
-    } catch {
-      // isTypeSupported throwing means "not supported" here.
-    }
+  const mp4 = ["video/mp4;codecs=avc1", "video/mp4"];
+  const ordered = preferred === "mp4" ? [...mp4, ...webm] : [...webm, ...mp4];
+  for (const candidate of ordered) {
+    if (isMimeSupported(candidate)) return candidate;
   }
   return "";
 }
@@ -278,7 +300,7 @@ async function exportVideo(
     track as unknown as { requestFrame?: () => void }
   ).requestFrame;
   const canRequestFrame = typeof requestFrame === "function";
-  const mimeType = pickVideoMimeType();
+  const mimeType = pickVideoMimeType(options?.videoFormat);
   const recorder = new MediaRecorder(
     stream,
     mimeType
