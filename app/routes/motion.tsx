@@ -161,12 +161,14 @@ import {
 import { clearLastChatThread, readLastChatThread } from "../lib/chat-home-thread";
 import {
   getProjectChatThread,
+  getProjectForChatThread,
   isProjectChatThreadAlive,
   openProjectChatThread,
   readActiveSidebarThread,
   removeProjectChatThread,
   setProjectChatThread,
 } from "../lib/project-chats";
+import { startFreshStudioChat } from "../lib/studio-chat";
 import {
   getMotionEditorActions,
   publishMotionEditor,
@@ -698,31 +700,38 @@ export default function MotionRoute() {
     const prevId = prevSelectedIdRef.current;
     prevSelectedIdRef.current = selectedId;
     if (!selectedId) return;
+    // Save the thread we are leaving under the project we are leaving,
+    // before any switch below replaces what the sidebar shows.
+    if (prevId && prevId !== selectedId) {
+      const leavingThreadId = readActiveSidebarThread();
+      if (leavingThreadId) setProjectChatThread(prevId, leavingThreadId);
+    }
     // Handoff: the home composer just built this project in its thread.
     // If this project has no chat yet, point the sidebar at the handoff
     // thread and record it — do not wait for the sidebar pointer to catch
     // up (it usually still shows the previous project when the studio
-    // mounts). Every other way into the studio (templates, uploads, New
-    // project, project cards) clears the handoff first, so a handoff here
-    // can only mean the home composer just built this project — or the
-    // same agent run just built another one in the same thread.
+    // mounts). The handoff is consumed here, right away: left alone it
+    // lives 10 minutes and would claim every project opened after it.
+    // A handoff thread that already belongs to another project is stale
+    // (that project built it) — drop it instead of stealing the thread.
     const handoffThreadId = readLastChatThread();
     if (handoffThreadId && !getProjectChatThread(selectedId)) {
-      setProjectChatThread(selectedId, handoffThreadId);
-      projectChatSwitchUntilRef.current = Date.now() + 3000;
-      openProjectChatThread(handoffThreadId);
-      // The sidebar panel is lazy-loaded; replay once in case it was not
-      // listening yet. Duplicate opens of the same thread are ignored.
-      const handoffRetryTimer = window.setTimeout(
-        () => openProjectChatThread(handoffThreadId),
-        500,
-      );
-      return () => window.clearTimeout(handoffRetryTimer);
-    }
-    // Save the thread we are leaving under the project we are leaving.
-    if (prevId && prevId !== selectedId) {
-      const leavingThreadId = readActiveSidebarThread();
-      if (leavingThreadId) setProjectChatThread(prevId, leavingThreadId);
+      const handoffOwner = getProjectForChatThread(handoffThreadId);
+      if (handoffOwner && handoffOwner !== selectedId) {
+        clearLastChatThread();
+      } else {
+        setProjectChatThread(selectedId, handoffThreadId);
+        clearLastChatThread();
+        projectChatSwitchUntilRef.current = Date.now() + 3000;
+        openProjectChatThread(handoffThreadId);
+        // The sidebar panel is lazy-loaded; replay once in case it was not
+        // listening yet. Duplicate opens of the same thread are ignored.
+        const handoffRetryTimer = window.setTimeout(
+          () => openProjectChatThread(handoffThreadId),
+          500,
+        );
+        return () => window.clearTimeout(handoffRetryTimer);
+      }
     }
     // Restore this project's thread, if it has one and it is not open.
     // A mapped thread can be dead on the server (never persisted, deleted,
@@ -754,6 +763,26 @@ export default function MotionRoute() {
         cancelled = true;
         if (retryTimer) window.clearTimeout(retryTimer);
       };
+    }
+    // No thread of its own yet: never adopt the thread another project
+    // is showing. The sidebar only holds one thread, so an unmapped
+    // project opened from the project list would otherwise record the
+    // previous project's conversation as its own. Start a fresh chat
+    // instead; the recorder below picks the new thread up once the panel
+    // switches. An unowned thread (e.g. the agent just built this project
+    // in it) is left alone — the recorder records it under this project.
+    const active = readActiveSidebarThread();
+    const activeOwner = active ? getProjectForChatThread(active) : null;
+    if (active && activeOwner && activeOwner !== selectedId) {
+      projectChatSwitchUntilRef.current = Date.now() + 3000;
+      startFreshStudioChat();
+      // The sidebar panel is lazy-loaded; replay once in case it was not
+      // listening yet.
+      const freshRetryTimer = window.setTimeout(
+        () => startFreshStudioChat(),
+        500,
+      );
+      return () => window.clearTimeout(freshRetryTimer);
     }
   }, [selectedId]);
 

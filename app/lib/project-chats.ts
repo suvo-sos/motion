@@ -40,11 +40,24 @@ function readMap(): ProjectChatMap {
       return {};
     }
     const map: ProjectChatMap = {};
+    // One thread belongs to one project. A thread recorded under two
+    // projects is a steal from the earlier buggy window (the recorder
+    // used to adopt whatever thread the sidebar showed) — keep the
+    // first claim, which is the project the thread was built for, and
+    // drop the later ones so the poisoned project starts fresh.
+    const seenThreads = new Set<string>();
+    let dropped = false;
     for (const [key, value] of Object.entries(parsed)) {
       if (typeof key === "string" && typeof value === "string" && value) {
+        if (seenThreads.has(value)) {
+          dropped = true;
+          continue;
+        }
+        seenThreads.add(value);
         map[key] = value;
       }
     }
+    if (dropped) writeMap(map);
     return map;
   } catch {
     return {};
@@ -83,6 +96,12 @@ export function setProjectChatThread(
   if (!projectId || !threadId) return;
   const map = readMap();
   if (map[projectId] === threadId) return;
+  // A thread already belongs to another project: never steal it. The
+  // sidebar only shows one thread, so without this the recorder would
+  // adopt the previous project's conversation for the project just
+  // opened. The caller starts a fresh chat for the new project instead.
+  const owner = getProjectForChatThread(threadId);
+  if (owner && owner !== projectId) return;
   map[projectId] = threadId;
   writeMap(map);
 }
@@ -103,8 +122,10 @@ export function removeProjectChatThread(projectId: string): void {
  * the user ever opened leaves its own stale key behind — so scanning for
  * the first `:tab:` key returned another tab's old thread, and projects
  * were recorded under the wrong conversation. Read this tab's exact key
- * first, then the legacy key the sidebar also writes on every persist,
- * and only then fall back to whichever tab key was seen most recently.
+ * first, then the legacy key the sidebar also writes on every persist.
+ * When neither exists the sidebar has no thread yet (fresh tab, or the
+ * keys were just cleared for a new chat) — report none rather than
+ * scanning other tabs' keys, which would resurrect another tab's thread.
  */
 export function readActiveSidebarThread(): string | null {
   if (typeof window === "undefined") return null;
@@ -115,18 +136,7 @@ export function readActiveSidebarThread(): string | null {
     if (exact) return exact;
     const legacy = window.localStorage.getItem(ACTIVE_THREAD_PREFIX);
     if (legacy) return legacy;
-    let newest: { id: string; seen: number } | null = null;
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (!key || !key.startsWith(`${ACTIVE_THREAD_PREFIX}:tab:`)) continue;
-      if (key.endsWith(":seen")) continue;
-      const value = window.localStorage.getItem(key);
-      if (!value) continue;
-      const seenRaw = window.localStorage.getItem(`${key}:seen`);
-      const seen = seenRaw ? Number(seenRaw) : 0;
-      if (!newest || seen > newest.seen) newest = { id: value, seen };
-    }
-    return newest?.id ?? null;
+    return null;
   } catch {
     return null;
   }

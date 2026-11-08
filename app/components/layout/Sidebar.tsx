@@ -134,6 +134,7 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
               <Link
                 to={`/motion?id=${encodeURIComponent(project.id)}`}
                 aria-label={project.title}
+                onClick={startFreshStudioChat}
                 className={cn(
                   "grid size-8 place-items-center rounded-md text-[11px] font-semibold uppercase transition-colors",
                   activeId === project.id
@@ -187,6 +188,7 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
                     <Link
                       to={`/motion?id=${encodeURIComponent(project.id)}`}
                       aria-current={active ? "page" : undefined}
+                      onClick={startFreshStudioChat}
                       className="flex min-w-0 flex-1 items-center gap-2 focus-visible:outline-none"
                     >
                       <span
@@ -216,7 +218,10 @@ function ProjectsSection({ collapsed }: { collapsed: boolean }) {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
                         <DropdownMenuItem
-                          onSelect={() => navigate(`/motion?id=${encodeURIComponent(project.id)}`)}
+                          onSelect={() => {
+                            startFreshStudioChat();
+                            navigate(`/motion?id=${encodeURIComponent(project.id)}`);
+                          }}
                         >
                           Open
                         </DropdownMenuItem>
