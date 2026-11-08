@@ -88,6 +88,8 @@ the files to see them move):
 
 ![Demo 2](download/demo-2.svg)
 
+![Demo 3](download/demo-3.svg)
+
 ## Contact
 
 - Creator: suvo
