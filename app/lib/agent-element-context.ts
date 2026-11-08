@@ -85,7 +85,7 @@ function shortMentionLabel(element: AgentElementTarget, label: string): string {
 function findComposerEditor(): HTMLElement | null {
   return (
     document.querySelector<HTMLElement>(
-      ".agentkit-composer .ProseMirror[contenteditable=\"true\"], .agent-kit-chat-footer-stack .ProseMirror[contenteditable=\"true\"]",
+      ".agentkit-composer .ProseMirror[contenteditable=\"true\"], .agent-kit-chat-footer-stack .ProseMirror[contenteditable=\"true\"], .agent-composer-editor .ProseMirror[contenteditable=\"true\"]",
     ) ??
     document.querySelector<HTMLElement>(
       ".ProseMirror[contenteditable=\"true\"], [contenteditable=\"true\"]",
@@ -155,21 +155,39 @@ function composerReferenceFor(
     icon: "element",
     refType: "motion-element",
     refId: element.id || null,
+    // The tree path is unique and always present, unlike the id — an imported
+    // or grouped node often has none. It is only sent for id-less elements so
+    // the chip's tooltip keeps showing the id when there is one, and the path
+    // otherwise; either way a landed chip can be recognised.
+    refPath: element.id ? null : element.path || null,
     source: "motion-element",
   };
 }
 
 /**
- * True when the prompt already carries a chip for this element id. Reading
- * the chip's data attribute works even when the visible label was shortened
- * with an ellipsis, unlike a text match.
+ * True when the prompt already carries a chip for this element. Reading the
+ * chip's attributes works even when the visible label was shortened with an
+ * ellipsis, unlike a text match. Chips are matched by id when there is one,
+ * and by tree path otherwise: an id-less element has no `data-mention-ref-id`,
+ * so without the path check a landed chip looks missing and gets inserted a
+ * second time.
  */
-function hasElementChip(editor: HTMLElement, id: string): boolean {
+function hasElementChip(
+  editor: HTMLElement,
+  element: AgentElementTarget,
+): boolean {
+  const id = element.id;
+  const path = element.path;
   return Array.from(
     editor.querySelectorAll<HTMLElement>(
       '[data-mention-ref-type="motion-element"]',
     ),
-  ).some((chip) => chip.getAttribute("data-mention-ref-id") === id);
+  ).some((chip) => {
+    if (id && chip.getAttribute("data-mention-ref-id") === id) return true;
+    // The chip's title is `refPath || refId || label` (see MentionReference),
+    // so the path is on the DOM even though it has no data attribute.
+    return Boolean(path) && chip.getAttribute("title") === path;
+  });
 }
 
 /**
@@ -184,9 +202,11 @@ function isElementMentioned(
   element: AgentElementTarget,
   label: string,
 ): boolean {
+  // Chip first, and for every element: an id-less node can only be matched
+  // here, by path, and must still count as mentioned.
+  if (hasElementChip(editor, element)) return true;
   const id = element.id;
   if (!id) return false;
-  if (hasElementChip(editor, id)) return true;
   const text = editor.textContent || "";
   if (text.includes(`#${id}`)) return true;
   return text.includes(shortMentionLabel(element, label));
