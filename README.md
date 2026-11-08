@@ -81,10 +81,12 @@ browser.
 
 ## Example outcomes
 
-A real animation produced by the studio (standalone animated SVG export — open
-the file to see it move):
+Real animations produced by the studio (standalone animated SVG exports — open
+the files to see them move):
 
 ![Apple fruit drop to logo reveal](download/apple.svg)
+
+![Brand logo reveal](download/Brand-logo-revel-Template%20(1).svg)
 
 ## Contact
 
