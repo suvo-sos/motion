@@ -33,24 +33,6 @@ Open the URL printed by Vite (default `http://localhost:8082`); `/` goes
 straight to the project launcher. If the agent needs a model that is not
 already available, connect an AI provider in Settings -> Agent.
 
-## Production
-
-Production needs a persistent Postgres database:
-
-```bash
-DATABASE_URL=postgres://...
-```
-
-For a production deployment with authentication enabled, also set:
-
-```bash
-BETTER_AUTH_SECRET=<openssl rand -hex 32>
-```
-
-`netlify.toml` maps `NETLIFY_DATABASE_URL` to `DATABASE_URL` and runs
-migrations on production deploys. Then run `pnpm build` and `pnpm start`, or
-deploy with Netlify / Vercel.
-
 ### Hackathon demo (no login required)
 
 This build is designed to be tried without creating an account:
