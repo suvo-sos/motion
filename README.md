@@ -84,14 +84,13 @@ browser.
 Real animations produced by the studio (standalone animated SVG exports — open
 the files to see them move):
 
-![Demo 1](download/demo-1.svg)
+<img src="download/demo-1.svg" width="240" alt="Demo 1" />
 
+<img src="download/demo-3.svg" width="240" alt="Demo 3" />
 
-![Demo 3](download/demo-3.svg)
+<img src="download/demo-4.svg" width="240" alt="Demo 4" />
 
-![Demo 4](download/demo-4.svg)
-
-![Demo 5](download/demo-5.svg)
+<img src="download/demo-5.svg" width="240" alt="Demo 5" />
 
 ## Contact
 
