@@ -84,9 +84,9 @@ browser.
 Real animations produced by the studio (standalone animated SVG exports — open
 the files to see them move):
 
-![Apple fruit drop to logo reveal](download/apple.svg)
+![Demo 1](download/demo-1.svg)
 
-![Brand logo reveal](download/Brand-logo-revel-Template%20(1).svg)
+![Demo 2](download/demo-2.svg)
 
 ## Contact
 
