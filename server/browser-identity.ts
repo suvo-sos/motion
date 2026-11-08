@@ -45,12 +45,13 @@ export function resolveBrowserIdentity(event: H3Event): BrowserIdentity {
     existing && BROWSER_ID_PATTERN.test(existing) ? existing : randomUUID();
 
   if (id !== existing) {
+    const secure = isSecureRequest(event);
     setCookie(event, BROWSER_ID_COOKIE, id, {
       httpOnly: true,
-      sameSite: "lax",
+      sameSite: secure ? "none" : "lax",
       path: "/",
       maxAge: BROWSER_ID_MAX_AGE_SECONDS,
-      secure: isSecureRequest(event),
+      secure,
     });
   }
 
