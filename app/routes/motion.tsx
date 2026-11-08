@@ -1751,6 +1751,36 @@ function getElementByPath(doc: Document, path: string): Element | null {
   return current;
 }
 
+/**
+ * Whether an element is actually painted at the current playhead. The canvas
+ * applies the timeline as inline styles, so an element that fades in later
+ * (or out earlier) sits at `opacity: 0` right now — the browser still
+ * hit-tests it, but the user cannot see it. Clicks must never land there:
+ * stacked copies at the same spot (a countdown, a swap, a cross-fade) would
+ * otherwise select whichever invisible copy happens to be on top.
+ */
+function isShowingAtPlayhead(el: Element, svg: Element): boolean {
+  const style = window.getComputedStyle(el);
+  if (style.display === "none") return false;
+  // visibility inherits, so the element's own computed value already answers
+  // for the whole ancestor chain.
+  if (style.visibility === "hidden" || style.visibility === "collapse") {
+    return false;
+  }
+  // opacity is per-element, not inherited: multiply the chain up to the root
+  // so a child of a faded-out group is treated as faded out too.
+  let opacity = 1;
+  let cur: Element | null = el;
+  while (cur) {
+    const own = Number.parseFloat(window.getComputedStyle(cur).opacity);
+    if (Number.isFinite(own)) opacity *= own;
+    if (opacity <= 0.01) return false;
+    if (cur === svg) break;
+    cur = cur.parentElement;
+  }
+  return true;
+}
+
 function getHiddenAndLockedIds(svg: string): { hidden: Set<string>; locked: Set<string> } {
   const hidden = new Set<string>();
   const locked = new Set<string>();
@@ -9322,19 +9352,48 @@ function StudioWorkspace({
   /** Selectable ids under a screen point, front-most (top of z-order) first. */
   const stackAtPoint = useCallback(
     (clientX: number, clientY: number, svg: Element): string[] => {
+      // The whole hit chain in paint order: the element the browser would
+      // have given us as event.target, plus everything painted under it at
+      // that pixel (and the containers those live in).
+      const hits = document
+        .elementsFromPoint(clientX, clientY)
+        .filter(
+          (el): el is Element =>
+            el instanceof Element &&
+            svg.contains(el) &&
+            !el.closest("defs, mask, clipPath, symbol"),
+        );
+      if (hits.length === 0) return [];
+      const hitSet = new Set(hits);
+
+      // Whether something the playhead actually shows is painted at this
+      // pixel. A shape counts only when it is visible right now — an element
+      // that fades in later sits at opacity 0 and is still hit-tested by the
+      // browser, so stacked copies would otherwise steal the click from the
+      // one on screen. A group or the <svg> root never paints anything
+      // itself; it is in the chain only because it contains what was hit, so
+      // it counts only when a visible descendant covers the point.
+      const paintsCache = new Map<Element, boolean>();
+      const paintsAtPoint = (el: Element): boolean => {
+        const cached = paintsCache.get(el);
+        if (cached !== undefined) return cached;
+        const hitChildren = Array.from(el.children).filter((kid) =>
+          hitSet.has(kid),
+        );
+        const result = hitChildren.length
+          ? hitChildren.some(paintsAtPoint)
+          : isShowingAtPlayhead(el, svg);
+        paintsCache.set(el, result);
+        return result;
+      };
+
       const ids: string[] = [];
       const seen = new Set<string>();
-      // elementsFromPoint is the whole hit stack in paint order: the element
-      // the browser would have given us as event.target, plus everything
-      // painted under it at that pixel.
-      for (const el of document.elementsFromPoint(clientX, clientY)) {
-        if (!(el instanceof Element) || !svg.contains(el)) continue;
-        if (el.closest("defs, mask, clipPath, symbol")) continue;
+      for (const el of hits) {
+        if (!paintsAtPoint(el)) continue;
         // Nearest id'd ancestor-or-self: exactly what a single click used to
         // select, which also makes containing groups reachable on a later
-        // click instead of being skipped over. The <svg> root itself counts
-        // too — exports often carry id="Layer_1" there, and a click on the
-        // bare artboard selected it before this change.
+        // click instead of being skipped over.
         let cur: Element | null = el;
         let id: string | null = null;
         while (cur) {
