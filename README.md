@@ -86,7 +86,6 @@ the files to see them move):
 
 ![Demo 1](download/demo-1.svg)
 
-![Demo 2](download/demo-2.svg)
 
 ![Demo 3](download/demo-3.svg)
 
