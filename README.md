@@ -81,16 +81,10 @@ browser.
 
 ## Example outcomes
 
-A few animations produced by the studio (each is a standalone animated SVG
-export — open the file to see it move):
+A real animation produced by the studio (standalone animated SVG export — open
+the file to see it move):
 
-| Loading dots | Heartbeat | Orbit |
-| :---: | :---: | :---: |
-| ![Loading dots](examples/loading-dots.svg) | ![Heartbeat](examples/heartbeat.svg) | ![Orbit](examples/orbit.svg) |
-
-| Spinner | Sticker pop | Bounce |
-| :---: | :---: | :---: |
-| ![Spinner](examples/spinner.svg) | ![Sticker pop](examples/sticker-pop.svg) | ![Bounce](examples/bounce.svg) |
+![Apple fruit drop to logo reveal](download/apple.svg)
 
 ## Contact
 
