@@ -9298,6 +9298,66 @@ function StudioWorkspace({
     unitsPerPx: number;
   } | null>(null);
 
+  // Click-through selection. A plain click takes the front-most element under
+  // the cursor; clicking again in the same spot walks one step further down
+  // the stack (and wraps back to the front), so an element hidden under
+  // another can always be reached without hunting through the layer list.
+  // Alt/Option reverses the walk: the first click takes the back-most
+  // element and each further click moves towards the front. The stack is
+  // recomputed on every click and only reused while the point stays within
+  // a few pixels, so moving the cursor always starts again at the front.
+  const clickStackRef = useRef<{
+    x: number;
+    y: number;
+    key: string;
+    index: number;
+    id: string;
+  } | null>(null);
+
+  // Switching tools is a fresh intent: the next click starts at the front.
+  useEffect(() => {
+    clickStackRef.current = null;
+  }, [tool]);
+
+  /** Selectable ids under a screen point, front-most (top of z-order) first. */
+  const stackAtPoint = useCallback(
+    (clientX: number, clientY: number, svg: Element): string[] => {
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      // elementsFromPoint is the whole hit stack in paint order: the element
+      // the browser would have given us as event.target, plus everything
+      // painted under it at that pixel.
+      for (const el of document.elementsFromPoint(clientX, clientY)) {
+        if (!(el instanceof Element) || !svg.contains(el)) continue;
+        if (el.closest("defs, mask, clipPath, symbol")) continue;
+        // Nearest id'd ancestor-or-self: exactly what a single click used to
+        // select, which also makes containing groups reachable on a later
+        // click instead of being skipped over. The <svg> root itself counts
+        // too — exports often carry id="Layer_1" there, and a click on the
+        // bare artboard selected it before this change.
+        let cur: Element | null = el;
+        let id: string | null = null;
+        while (cur) {
+          const candidate = cur.getAttribute("id");
+          if (candidate) {
+            id = candidate;
+            break;
+          }
+          if (cur === svg) break;
+          cur = cur.parentElement;
+        }
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        // Hidden elements cannot be hit anyway; locked ones must stay out of
+        // the walk so a click never lands on something the user can't move.
+        if (hiddenIds?.has(id) || lockedIds?.has(id)) continue;
+        ids.push(id);
+      }
+      return ids;
+    },
+    [hiddenIds, lockedIds],
+  );
+
   const handleStagePointerDown = (e: React.PointerEvent) => {
     if (effectiveTool === "hand" || e.button !== 0) return;
 
@@ -9350,33 +9410,65 @@ function StudioWorkspace({
       setPenPoints((prev) => [...prev, point]);
       return;
     }
-    const target = (e.target as Element).closest("[id]");
-    if (!target || !target.id) {
+    const svg = stageRef.current?.querySelector("svg") ?? null;
+    const stack = svg ? stackAtPoint(e.clientX, e.clientY, svg) : [];
+    if (stack.length === 0) {
+      clickStackRef.current = null;
       onSelectElement?.(null);
       setMultiSelection([]);
       clearKeyframeSelection();
       setGuides({ x: null, y: null });
       return;
     }
-    const id = target.id;
-    if (lockedIds?.has(id)) return;
 
     // Shift/Cmd-click adds to (or removes from) the multi-selection used by
     // Align/Distribute, instead of replacing it. It only changes selection,
-    // it does not start a drag.
+    // it does not start a drag. Modifier-clicks always take the front-most
+    // element so the click-through walk does not affect them.
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      const topId = stack[0]!;
       setPlaying(false);
       setGuides({ x: null, y: null });
-      if (multiSelection.includes(id)) {
-        const next = multiSelection.filter((value) => value !== id);
+      if (multiSelection.includes(topId)) {
+        const next = multiSelection.filter((value) => value !== topId);
         setMultiSelection(next);
         onSelectElement?.(next.length ? next[next.length - 1]! : null);
       } else {
-        setMultiSelection((prev) => [...prev, id]);
-        onSelectElement?.(id);
+        setMultiSelection((prev) => [...prev, topId]);
+        onSelectElement?.(topId);
       }
       return;
     }
+
+    // Front-to-back by default; Alt walks back-to-front instead.
+    const ordered = e.altKey ? [...stack].reverse() : stack;
+    const key = ordered.join("\u0001");
+    const prevClick = clickStackRef.current;
+    const sameSpot =
+      prevClick !== null &&
+      Math.hypot(prevClick.x - e.clientX, prevClick.y - e.clientY) <= 6;
+    // Only continue the walk if this exact spot last produced the element
+    // that is still selected. Selecting something else in the meantime (a
+    // layer row, Escape, the agent) restarts at the front instead of
+    // resuming halfway down a stack the user has forgotten about.
+    const continuing =
+      prevClick !== null &&
+      sameSpot &&
+      prevClick.key === key &&
+      prevClick.id === selectedElementId;
+    const index = continuing
+      ? (prevClick.index + 1) % ordered.length
+      : 0;
+    const id = ordered[index]!;
+    clickStackRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      key,
+      index,
+      id,
+    };
+    const target = svg?.querySelector<Element>(`#${CSS.escape(id)}`) ?? null;
+    if (!target) return;
 
     onSelectElement?.(id);
     setMultiSelection([id]);
@@ -9387,8 +9479,6 @@ function StudioWorkspace({
     const curY = sampleTargetProperty(id, "translateY", time, 0);
 
     const viewer = viewerRef.current;
-    const stage = stageRef.current;
-    const svg = stage?.querySelector("svg");
     if (!viewer || !svg) return;
     const vr = viewer.getBoundingClientRect();
     const er = target.getBoundingClientRect();
@@ -10025,6 +10115,13 @@ function StudioWorkspace({
                   <span>Pen</span>
                   <span className="ml-auto text-[10px] text-muted-foreground">P</span>
                 </DropdownMenuItem>
+                {/* Click-through is invisible otherwise: nothing on screen
+                    says a second click reaches the element underneath. */}
+                <div className="mt-1 border-t border-border px-2 pb-1 pt-2 text-[10px] leading-relaxed text-muted-foreground">
+                  Click again to select the element underneath ·{" "}
+                  <span className="font-medium">⌥ click</span> to start from the
+                  back
+                </div>
               </DropdownMenuContent>
             </DropdownMenu>
 
