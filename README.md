@@ -79,9 +79,27 @@ browser.
 3. Shape it: Edit keyframes on the timeline to perfect your timing
 4. Export it: Download a standalone animated SVG file
 
+## Example outcomes
+
+A few animations produced by the studio (each is a standalone animated SVG
+export — open the file to see it move):
+
+| Loading dots | Heartbeat | Orbit |
+| :---: | :---: | :---: |
+| ![Loading dots](examples/loading-dots.svg) | ![Heartbeat](examples/heartbeat.svg) | ![Orbit](examples/orbit.svg) |
+
+| Spinner | Sticker pop | Bounce |
+| :---: | :---: | :---: |
+| ![Spinner](examples/spinner.svg) | ![Sticker pop](examples/sticker-pop.svg) | ![Bounce](examples/bounce.svg) |
+
 ## Contact
 
 - Creator: suvo
 - Email: suvo.uio@gmail.com
-- 
+- Repository: https://github.com/suvo-sos/motion
+
+## License
+
+This project is open source and released under the [MIT License](./LICENSE).
+Anyone is free to use, modify, and distribute it.
 Full docs: [agent-native.com/docs](https://agent-native.com/docs?utm_source=github&utm_medium=referral)

@@ -1,7 +1,8 @@
 {
   "name": "svg-motion",
   "displayName": "SVG MOTION",
-  "private": true,
+  "private": false,
+  "license": "MIT",
   "description": "SVG MOTION — agent-native SVG animation studio.",
   "type": "module",
   "scripts": {

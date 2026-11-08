@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
+  <g id="orbit-system">
+    <circle cx="120" cy="80" r="62" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="4 8"/>
+    <circle cx="120" cy="18" r="11" fill="#22D3EE"/>
+    <circle cx="120" cy="142" r="11" fill="none"/>
+  </g>
+  <circle id="orbit-core" cx="120" cy="80" r="26" fill="#6366F1"/>
+<style>@keyframes m-orbit-system-0-transform {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes m-orbit-core-1-transform {
+  0% { animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); transform: scale(1); }
+  50% { animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); transform: scale(1.0799999999999998); }
+  100% { transform: scale(1); }
+}
+#orbit-system { animation: m-orbit-system-0-transform 2400ms linear infinite both; transform-box: fill-box; transform-origin: center; }
+#orbit-core { animation: m-orbit-core-1-transform 2400ms linear infinite both; transform-box: fill-box; transform-origin: center; }
+@media (prefers-reduced-motion: reduce) {
+#orbit-system { animation: none; transform: rotate(360deg); transform-box: fill-box; }
+#orbit-core { animation: none; transform: scale(1); transform-box: fill-box; }
+}</style></svg>

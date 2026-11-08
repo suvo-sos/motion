@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
+  <circle cx="120" cy="80" r="40" stroke="#E2E8F0" stroke-width="10"/>
+  <g id="spinner-arc">
+    <circle cx="120" cy="80" r="40" stroke="#6366F1" stroke-width="10" stroke-linecap="round" stroke-dasharray="63 252"/>
+  </g>
+<style>@keyframes m-spinner-arc-0-transform {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+#spinner-arc { animation: m-spinner-arc-0-transform 1000ms linear infinite both; transform-box: fill-box; transform-origin: center; }
+@media (prefers-reduced-motion: reduce) {
+#spinner-arc { animation: none; transform: rotate(360deg); transform-box: fill-box; }
+}</style></svg>

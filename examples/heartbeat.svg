@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" fill="none">
+  <path id="heart-body" d="M120 126C88 106 66 88 66 68c0-16 12-27 25-27 10 0 19 6 29 18 10-12 19-18 29-18 13 0 25 11 25 27 0 20-22 38-54 58z" fill="#EF4444"/>
+<style>@keyframes m-heart-body-0-transform {
+  0% { transform: scale(1); }
+  10% { animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); transform: scale(1.12); }
+  20% { animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); transform: scale(1); }
+  28% { animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); transform: scale(1.0699999999999998); }
+  40% { animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); transform: scale(1); }
+  100% { transform: scale(1); }
+}
+@keyframes m-heart-body-0-filter {
+  0% { filter: brightness(100%); }
+  10% { filter: brightness(122%); }
+  40% { filter: brightness(100%); }
+  100% { filter: brightness(100%); }
+}
+#heart-body { animation: m-heart-body-0-transform 1600ms linear infinite both, m-heart-body-0-filter 1600ms linear infinite both; transform-box: fill-box; transform-origin: center; }
+@media (prefers-reduced-motion: reduce) {
+#heart-body { animation: none; transform: scale(1); transform-box: fill-box; filter: brightness(100%); }
+}</style></svg>
