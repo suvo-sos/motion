@@ -83,6 +83,5 @@ browser.
 
 - Creator: suvo
 - Email: suvo.uio@gmail.com
-- Repository: https://github.com/suvo-sos/motion
-
+- 
 Full docs: [agent-native.com/docs](https://agent-native.com/docs?utm_source=github&utm_medium=referral)
