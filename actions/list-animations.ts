@@ -1,8 +1,9 @@
 import { defineAction } from "@agent-native/core/action";
 import { z } from "zod";
-import { desc } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { ownedBy, ownerFromCtx } from "../server/ownership";
 
 export default defineAction({
   description:
@@ -16,7 +17,7 @@ export default defineAction({
       .describe("Include raw svg markup and parsed tracks for thumbnails"),
   }),
   http: { method: "GET" },
-  run: async ({ includeSvg }) => {
+  run: async ({ includeSvg }, ctx) => {
     const db = getDb();
     const rows = await db
       .select({
@@ -30,6 +31,9 @@ export default defineAction({
         updatedAt: animations.updatedAt,
       })
       .from(animations)
+      // Only this browser's projects. Without a session (scripts), keep the
+      // unscoped listing.
+      .where(ownedBy(ownerFromCtx(ctx)) ?? sql`TRUE`)
       .orderBy(desc(animations.pinned), desc(animations.updatedAt))
       .limit(60);
 

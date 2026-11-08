@@ -3,6 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { animationOwnedBy, ownerFromCtx } from "../server/ownership";
 
 export default defineAction({
   description: "Fix SVG issues in an animation (add viewBox if missing, ensure valid dimensions)",
@@ -10,13 +11,13 @@ export default defineAction({
   schema: z.object({
     id: z.string().describe("Animation ID to fix"),
   }),
-  run: async ({ id }) => {
+  run: async ({ id }, ctx) => {
     const db = getDb();
     
     const [animation] = await db
       .select()
       .from(animations)
-      .where(eq(animations.id, id))
+      .where(animationOwnedBy(id, ownerFromCtx(ctx)))
       .limit(1);
     
     if (!animation) {

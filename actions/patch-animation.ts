@@ -1,8 +1,8 @@
 import { defineAction } from "@agent-native/core/action";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { animationOwnedBy, ownerFromCtx } from "../server/ownership";
 
 // Small targeted edits to an animation, applied to the latest saved copy.
 //
@@ -208,12 +208,13 @@ export default defineAction({
       .max(20)
       .describe("Edits to apply together, or not at all"),
   }),
-  run: async ({ id, operations }) => {
+  run: async ({ id, operations }, ctx) => {
     const db = getDb();
+    const owner = ownerFromCtx(ctx);
     const rows = await db
       .select()
       .from(animations)
-      .where(eq(animations.id, id))
+      .where(animationOwnedBy(id, owner))
       .limit(1);
     if (rows.length === 0) {
       return { error: `Animation ${id} not found. Re-read with list-animations or get-animation for the right id.` };
@@ -288,7 +289,7 @@ export default defineAction({
         hover: JSON.stringify(hover),
         updatedAt: now,
       })
-      .where(eq(animations.id, id));
+      .where(animationOwnedBy(id, owner));
     return { id, updatedAt: now, applied: operations.length };
   },
 });

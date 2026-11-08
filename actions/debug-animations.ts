@@ -1,16 +1,21 @@
 import { defineAction } from "@agent-native/core/action";
 import { z } from "zod";
+import { sql } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { ownedBy, ownerFromCtx } from "../server/ownership";
 
 export default defineAction({
   description: "Debug all animations to see their SVG and data",
   mcpTool: true,
   readOnly: true,
   schema: z.object({}),
-  run: async () => {
+  run: async (_input, ctx) => {
     const db = getDb();
-    const allAnimations = await db.select().from(animations);
+    const allAnimations = await db
+      .select()
+      .from(animations)
+      .where(ownedBy(ownerFromCtx(ctx)) ?? sql`TRUE`);
     
     const result = allAnimations.map((anim) => {
       const issues = [];

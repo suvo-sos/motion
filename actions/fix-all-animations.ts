@@ -1,18 +1,22 @@
 import { defineAction } from "@agent-native/core/action";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { ownedBy, ownerFromCtx } from "../server/ownership";
 
 export default defineAction({
   description: "Remove script tags from ALL animations to fix rendering issues",
   mcpTool: true,
   schema: z.object({}),
-  run: async () => {
+  run: async (_input, ctx) => {
     const db = getDb();
     
-    // Get all animations
-    const allAnimations = await db.select().from(animations);
+    // Get all animations owned by this browser
+    const allAnimations = await db
+      .select()
+      .from(animations)
+      .where(ownedBy(ownerFromCtx(ctx)) ?? sql`TRUE`);
     
     const results = [];
     let fixedCount = 0;

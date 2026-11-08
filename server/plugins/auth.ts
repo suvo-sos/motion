@@ -1,17 +1,40 @@
 import { createAuthPlugin } from "@agent-native/core/server";
+import type { H3Event } from "h3";
+
+import { resolveBrowserIdentity } from "../browser-identity";
 
 /**
- * Hackathon demo: the studio itself is public.
+ * Hackathon demo: there is no login at all.
  *
- * Auth stays enabled in production (AUTH_DISABLED must stay off — the
- * framework flags it as a production configuration error), but these
- * page routes load without a session. Visitors can browse templates,
- * draw, animate and export from localStorage projects without signing in.
+ * Every request resolves to the browser that sent it, using the random id in
+ * the `svg_motion_browser_id` cookie (minted on first visit). That id is the
+ * owner key for projects, the agent scratchpad, and chat history — so each
+ * browser gets its own private workspace without anyone signing in.
  *
- * Everything else — agent chat, actions, settings, /chat — still requires
- * a session. In particular /_agent-native/* is NOT listed here, so
- * anonymous visitors cannot call actions (save/delete/purge) or the agent.
+ * `getSession` replaces the framework's Better Auth sign-in entirely (no
+ * sign-in routes are mounted). `getBrowserSession` is the same resolver, but
+ * the framework only calls it when a cookie is present, for browser-only
+ * capabilities and approvals.
+ *
+ * The page paths are intentionally NOT public: the document request has to be
+ * the one that mints the cookie, so the browser owns an id before any client
+ * action runs.
  */
+function browserSession(event: H3Event) {
+  const { id, email } = resolveBrowserIdentity(event);
+
+  return {
+    email,
+    userId: `browser-${id}`,
+    name: "Guest",
+    // There is no mailbox behind this id, so there is nothing to verify.
+    // Marking it verified keeps "verify your email" prompts out of the UI.
+    emailVerified: true,
+  };
+}
+
 export default createAuthPlugin({
-  publicPaths: ["/", "/home", "/motion", "/manifest.json"],
+  getSession: async (event) => browserSession(event),
+  getBrowserSession: async (event) => browserSession(event),
+  publicPaths: ["/manifest.json"],
 });

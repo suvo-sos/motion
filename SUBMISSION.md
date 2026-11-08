@@ -55,13 +55,18 @@ straight to the project launcher.
 - Added a `?` Definitions popover listing definitions and explaining they are
   edited from Properties.
 - Removed debug logging from the studio and save-animation action.
-- Disabled the login wall for local/demo use (`AUTH_DISABLED`); `/` redirects
-  straight to the project launcher.
+- Removed the login wall entirely. There is no sign-in or user flow: the first
+  request mints a random browser id in a long-lived `httpOnly` cookie, and that
+  id is the owner key for projects, the agent scratchpad, and chat history, so
+  each browser gets its own workspace. `/` redirects straight to the project
+  launcher.
 - Documentation: README local-run and production notes, CHANGELOG entry.
 
 ## Notes
 
-- `pnpm build` reports production configuration errors if `AUTH_DISABLED` is
-  set or `BETTER_AUTH_SECRET`/a persistent database URL is missing. For a
-  production deployment, unset `AUTH_DISABLED`, set `BETTER_AUTH_SECRET`, and
-  provide `DATABASE_URL`/`NETLIFY_DATABASE_URL`.
+- No `AUTH_DISABLED` flag is involved: `server/plugins/auth.ts` supplies a
+  custom session resolver (`getSession`), so the app is always "signed in" as
+  the current browser. Do not set `AUTH_DISABLED` in a deployment.
+- A deployment still needs `BETTER_AUTH_SECRET` (encrypts stored provider /
+  Builder credentials) and a hosted `DATABASE_URL`; local PGlite is refused in
+  hosted runtimes.

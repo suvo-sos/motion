@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { ownerFromCtx } from "../server/ownership";
 
 const keyframeSchema = z.object({
   t: z.number().min(0).max(1).describe("Normalized time in the timeline, 0 to 1"),
@@ -98,6 +99,10 @@ export default defineAction({
   run: async ({ id, title, svg, tracks, hover, duration, loop, expectedUpdatedAt }, ctx) => {
     const db = getDb();
     const now = new Date().toISOString();
+    // The browser that saves a project owns it from then on. Re-saving also
+    // claims rows written before browser ids existed, so an old project does
+    // not stay invisible to the agent.
+    const owner = ownerFromCtx(ctx);
 
     // Remove script tags from SVG to prevent React rendering issues.
     // React refuses to render SVG with script tags for security reasons.
@@ -134,7 +139,7 @@ export default defineAction({
           hover: JSON.stringify(hover ?? {}),
           duration,
           loop,
-          ownerEmail: ctx?.userEmail ?? null,
+          ownerEmail: owner,
           orgId: ctx?.orgId ?? null,
           createdAt: now,
           updatedAt: now,
@@ -164,6 +169,7 @@ export default defineAction({
           ...(hover !== undefined ? { hover: JSON.stringify(hover) } : {}),
           duration,
           loop,
+          ...(owner ? { ownerEmail: owner } : {}),
           updatedAt: now,
         })
         .where(eq(animations.id, id));
@@ -179,7 +185,7 @@ export default defineAction({
       hover: JSON.stringify(hover ?? {}),
       duration,
       loop,
-      ownerEmail: ctx?.userEmail ?? null,
+      ownerEmail: owner,
       orgId: ctx?.orgId ?? null,
       createdAt: now,
       updatedAt: now,

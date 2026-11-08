@@ -1,8 +1,8 @@
 import { defineAction } from "@agent-native/core/action";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { animations } from "../server/db/schema";
+import { animationOwnedBy, ownerFromCtx } from "../server/ownership";
 
 function normalizeSvgSize(svg: string): string {
   if (!svg) return svg;
@@ -31,12 +31,12 @@ export default defineAction({
   // "This animation no longer exists" for animations the agent had just made.
   // Agent tool calls bypass HTTP, so this does not change how the agent reads.
   http: { method: "POST" },
-  run: async ({ id }) => {
+  run: async ({ id }, ctx) => {
     const db = getDb();
     const rows = await db
       .select()
       .from(animations)
-      .where(eq(animations.id, id))
+      .where(animationOwnedBy(id, ownerFromCtx(ctx)))
       .limit(1);
     if (rows.length === 0) return { animation: null };
     const row = rows[0];
