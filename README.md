@@ -33,27 +33,6 @@ Open the URL printed by Vite (default `http://localhost:8082`); `/` goes
 straight to the project launcher. If the agent needs a model that is not
 already available, connect an AI provider in Settings -> Agent.
 
-### Hackathon demo (no login required)
-
-This build is designed to be tried without creating an account:
-
-- The app opens straight into the project launcher (`/` redirects to `/home`).
-- Saved projects live in the browser (`localStorage`, key
-  `motion-studio-projects:v1`), so no server-side user data is stored.
-- Postgres is only a short-lived scratchpad for the agent. The
-  `purge-ephemeral-data` action can delete rows older than 24 hours.
-
-For Vercel, set only:
-
-```bash
-DATABASE_URL=postgres://...   # any free hosted Postgres (Neon/Supabase)
-```
-
-`BETTER_AUTH_SECRET` is optional while auth is disabled. Let the build run
-`pnpm migrate:production`; it creates the framework tables in that database.
-No project data needs to be imported — users create their own library in their
-browser.
-
 ## Quick Start
 
 1. Describe it: Use the prompt composer to describe an animation
